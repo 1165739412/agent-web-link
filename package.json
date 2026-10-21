@@ -1,0 +1,15 @@
+{
+  "name": "agent-web-link",
+  "version": "0.1.0",
+  "description": "Cross-project agent task routing: a local task registry/service + MCP server + multi-backend web-relay (ChatGPT / DeepSeek) for human-in-the-loop agent collaboration.",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "scripts": {
+    "test": "node test/run_tests.mjs",
+    "test:manual:browser": "node test/deepseek_adapter_test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

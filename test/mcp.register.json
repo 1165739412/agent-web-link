@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "agent-link": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "./test/mcp_server.mjs",
+        "--projects",
+        "./test/projects.json",
+        "--token-file",
+        "./test/service/token.txt"
+      ],
+      "description": "agent-link 本地任务服务：领取下一项任务、查询任务状态、提交执行结果与证据"
+    }
+  }
+}

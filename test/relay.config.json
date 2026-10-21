@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "cdpHost": "http://127.0.0.1:9222",
+  "backends": [
+    { "id": "chatgpt" },
+    { "id": "deepseek" }
+  ],
+  "preferBackend": null,
+  "failoverOnNetworkError": false,
+  "conversations": [
+    {
+      "id": "6ad8248b-6e50-83ec-b696-8e61f649c84e",
+      "url": "https://chatgpt.com/c/6ad8248b-6e50-83ec-b696-8e61f649c84e",
+      "label": "主对话（语法检查任务）"
+    },
+    {
+      "id": "6ad790e5-59a8-83ec-96d4-aa51f4f59c0b",
+      "url": "https://chatgpt.com/c/6ad790e5-59a8-83ec-96d4-aa51f4f59c0b",
+      "label": "备份对话（R24 历史，可能不可用）"
+    }
+  ],
+  "allowAnyReadyPage": true,
+  "replyTimeoutMs": 180000,
+  "pollMs": 1500,
+  "stableNeed": 3
+}

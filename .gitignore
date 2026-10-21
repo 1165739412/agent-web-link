@@ -1,0 +1,54 @@
+# 依赖
+node_modules/
+
+# 浏览器调试 Profile（含登录态 cookie，绝不入库）
+.chrome-profile/
+
+# 运行态数据（含真实会话 ID、令牌、任务/报告数据、对话回执）—— 不入库
+test/state/
+test/log/
+test/tasks/
+test/service/
+test/projects.json
+test/qwen-bench.config.json
+
+# 私人/真实配置与令牌
+*.token.txt
+service/token.txt
+token.txt
+
+# 调试脚本与一次性探针（含本机绝对路径与私人会话，不入库）
+test/tmp_*.mjs
+test/tmp_r*.mjs
+test/deepseek_probe*.mjs
+test/deepseek_readonly_check.mjs
+test/deepseek_diag.mjs
+test/ds_replies_full.mjs
+test/reconcile_*.mjs
+test/r24_final_verify.mjs
+scrub_pii.mjs
+
+# 临时文件
+*.tmp
+*.log
+.DS_Store
+test/tmp_*/
+test/tmp_*
+
+# 调试 / 诊断 / 一次性探针脚本（不入库，避免噪声与残留路径）
+test/diag_*.mjs
+test/cdp_send_test.mjs
+test/cdp_list_tabs.mjs
+test/close_error_tabs.mjs
+test/clear_composer_if_sent.mjs
+test/cross_conv_verify.mjs
+test/context_limit_probe.mjs
+test/context_capture_draft.mjs
+test/comm_test_once.mjs
+test/collab_*.mjs
+test/handoff*.mjs
+test/onboard_rehearsal.mjs
+test/ops_*.mjs
+test/backup/
+test/extract_messages.mjs
+test/mcp_call.mjs
