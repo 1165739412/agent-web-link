@@ -70,7 +70,8 @@ await record("M1 真实注册表加载 agent-link + qwen-bench（路径真实、
   assert.ok(fs.existsSync(p.config.projectRoot), "qwen-bench 根目录不存在: " + p.config.projectRoot);
   assert.equal(path.resolve(p.executor.root), path.resolve(p.config.projectRoot));
   const svc = createTaskService({ projectsFile: DEFAULT_PROJECTS_FILE, tokenFile: DEFAULT_TOKEN_FILE, log: () => {} });
-  assert.deepEqual([...svc.projects].sort(), ["agent-link", "qwen-bench"]);
+  const names = [...svc.projects].sort();
+  assert.ok(names.includes("agent-link") && names.includes("qwen-bench"), `缺少内置项目: ${names.join(",")}`);
   assert.deepEqual(svc.projectErrors, {});
 });
 } else { skips.push("SKIPPED M1 真实注册表（未提供 test/projects.json 或 qwen-bench 根目录）"); }

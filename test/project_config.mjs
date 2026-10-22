@@ -69,13 +69,18 @@ export function validateProjectConfig(raw, opts = {}) {
   if (!isStr(raw.projectRoot) || !raw.projectRoot.trim()) {
     fail("projectRoot 必填（绝对路径字符串）");
   } else if (!path.isAbsolute(raw.projectRoot)) {
-    fail(`projectRoot 必须是绝对路径: ${raw.projectRoot}`);
+    // 可移植配置：允许相对 projectRoot，按配置文件所在目录解析（需显式开启）
+    if (opts.resolveRelativeToConfig && configPath) {
+      root = path.resolve(path.dirname(configPath), raw.projectRoot);
+    } else {
+      fail(`projectRoot 必须是绝对路径: ${raw.projectRoot}`);
+    }
   } else {
     root = path.resolve(raw.projectRoot);
-    if (requireExistingRoot) {
-      if (!fs.existsSync(root)) fail(`projectRoot 不存在: ${root}`);
-      else if (!fs.statSync(root).isDirectory()) fail(`projectRoot 不是目录: ${root}`);
-    }
+  }
+  if (root && requireExistingRoot) {
+    if (!fs.existsSync(root)) fail(`projectRoot 不存在: ${root}`);
+    else if (!fs.statSync(root).isDirectory()) fail(`projectRoot 不是目录: ${root}`);
   }
 
   // 命令白名单校验：解释器 basename 或项目根内绝对路径；无 shell、无相对路径、无 NUL
@@ -201,12 +206,15 @@ export function failClosedConfig(projectRoot) {
 export function loadActiveProjectConfig(opts = {}) {
   const { file = null, env = process.env, fallbackRoot = null, ...validateOpts } = opts;
   const cfgPath = file || env[CONFIG_ENV_VAR] || CONFIG_FILE_DEFAULT;
+  // 可移植配置：默认允许相对 projectRoot，按配置文件所在目录解析（直接调用 validateProjectConfig 仍严格）
+  const vOpts = { ...validateOpts };
+  if (vOpts.resolveRelativeToConfig === undefined) vOpts.resolveRelativeToConfig = true;
 
   if (!fs.existsSync(cfgPath)) {
     if (!fallbackRoot) {
       return { ok: false, errors: [`配置文件不存在且未提供 fallbackRoot: ${cfgPath}`], config: null, configPath: cfgPath, source: "missing" };
     }
-    const r = validateProjectConfig(defaultProjectConfig(fallbackRoot), { ...validateOpts, configPath: null });
+    const r = validateProjectConfig(defaultProjectConfig(fallbackRoot), { ...vOpts, configPath: null });
     return { ...r, configPath: cfgPath, source: "fallback" };
   }
 
@@ -216,7 +224,7 @@ export function loadActiveProjectConfig(opts = {}) {
   } catch (e) {
     return { ok: false, errors: [`配置文件非合法 JSON: ${e.message}`], config: null, configPath: cfgPath, source: "file" };
   }
-  const r = validateProjectConfig(raw, { ...validateOpts, configPath: cfgPath });
+  const r = validateProjectConfig(raw, { ...vOpts, configPath: cfgPath });
   return { ...r, configPath: cfgPath, source: "file" };
 }
 

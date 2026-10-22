@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "agent-link",
-  "projectRoot": ".",
+  "projectRoot": "..",
   "projectTests": [
     { "command": "node", "args": ["test/comm_integration_test.mjs"] },
     { "command": "node", "args": ["test/run_state_store_test.mjs"] }

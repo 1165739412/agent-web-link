@@ -46,7 +46,7 @@ export function loadProjectsRegistry(file) {
     if (typeof p.config !== "string" || !p.config.trim()) { const m = `项目 ${p.name} 缺少 config`; errors.push(m); projectErrors[p.name] = m; continue; }
     if (projects.has(p.name)) { const m = `项目名重复: ${p.name}`; errors.push(m); projectErrors[p.name] = m; continue; }
     const cfgPath = path.isAbsolute(p.config) ? p.config : path.resolve(baseDir, p.config);
-    const loaded = loadActiveProjectConfig({ file: cfgPath, env: {} });
+    const loaded = loadActiveProjectConfig({ file: cfgPath, env: {}, resolveRelativeToConfig: true });
     if (!loaded.ok) { const m = `项目 ${p.name} 配置非法: ${(loaded.errors || []).join("; ")}`; errors.push(m); projectErrors[p.name] = m; continue; }
     projects.set(p.name, {
       name: p.name,
