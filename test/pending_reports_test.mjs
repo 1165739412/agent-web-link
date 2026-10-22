@@ -14,9 +14,9 @@ function record(name, fn) {
 }
 
 record("P1 同内容幂等持久化（同 hash 只一份）", () => {
-  const text = "[AGENT_REPORT]\nproject: qwen-bench\n内容";
-  const a = PR.persistPendingReport({ dir: TMP, text, project: "qwen-bench", sourceConvId: "c1" });
-  const b = PR.persistPendingReport({ dir: TMP, text, project: "qwen-bench", sourceConvId: "c1" });
+  const text = "[AGENT_REPORT]\nproject: example-project\n内容";
+  const a = PR.persistPendingReport({ dir: TMP, text, project: "example-project", sourceConvId: "c1" });
+  const b = PR.persistPendingReport({ dir: TMP, text, project: "example-project", sourceConvId: "c1" });
   assert.equal(a.ok, true);
   assert.equal(b.existing, true);
   assert.equal(a.report.reportId, b.report.reportId);

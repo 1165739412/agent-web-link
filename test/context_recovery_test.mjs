@@ -18,7 +18,7 @@ function env(tag) {
   fs.mkdirSync(stateDir, { recursive: true });
   return { stateDir, checkpointFile: path.join(stateDir, "context_handoff_checkpoint.json"), dir: path.join(stateDir, "pending_reports") };
 }
-const REPORT_TEXT = "[AGENT_REPORT]\n\nproject: qwen-bench\n测试报告：B 类请裁定\n\n[/AGENT_REPORT]";
+const REPORT_TEXT = "[AGENT_REPORT]\n\nproject: example-project\n测试报告：B 类请裁定\n\n[/AGENT_REPORT]";
 const exhausted = (text) => async () => ({
   pages: [],
   exhausted: [{ url: "https://chatgpt.com/c/aaaaaaaa-1111", page: {}, limit: { limit: true, signals: ["聊天上下文已用完"] }, draft: { found: true, text } }],
@@ -126,7 +126,7 @@ await record("R6 新对话仍上下文耗尽 → CONTEXT_LIMIT，报告保持 PE
 
 await record("R7 崩溃恢复：报告 SENDING + 检查点 SENT → 先归一为 SEND_UNCONFIRMED，读回后 DECISION_RETURNED", async () => {
   const e = env("r7");
-  const p = PR.persistPendingReport({ dir: e.dir, text: REPORT_TEXT, project: "qwen-bench", sourceConvId: "c1" }).report;
+  const p = PR.persistPendingReport({ dir: e.dir, text: REPORT_TEXT, project: "example-project", sourceConvId: "c1" }).report;
   p.status = PR.STATUS.SENDING; PR.savePendingReport(e.dir, p);
   PR.saveCheckpoint(e.checkpointFile, { reportId: p.reportId, status: PR.STATUS.SENT, newConvId: "c2", sourceConvId: "c1" });
   const hash = PR.hashOf(REPORT_TEXT);
@@ -185,7 +185,7 @@ await record("R11 网络回复超时（已点击）→ SEND_UNCONFIRMED（不自
 
 await record("R12 对账：报告已在对话且其后无助手 → SENT（不重发）", async () => {
   const e = env("r12");
-  const p = PR.persistPendingReport({ dir: e.dir, text: REPORT_TEXT, project: "qwen-bench", sourceConvId: "c1" }).report;
+  const p = PR.persistPendingReport({ dir: e.dir, text: REPORT_TEXT, project: "example-project", sourceConvId: "c1" }).report;
   p.status = PR.STATUS.SENDING; PR.savePendingReport(e.dir, p);
   PR.saveCheckpoint(e.checkpointFile, { reportId: p.reportId, status: PR.STATUS.SENDING, newConvId: "c9", sourceConvId: "c1" });
   const res = await reconcilePendingReport({
@@ -198,7 +198,7 @@ await record("R12 对账：报告已在对话且其后无助手 → SENT（不�
 
 await record("R13 对账：报告不在对话 → PENDING（可稍后投递）", async () => {
   const e = env("r13");
-  const p = PR.persistPendingReport({ dir: e.dir, text: REPORT_TEXT, project: "qwen-bench" }).report;
+  const p = PR.persistPendingReport({ dir: e.dir, text: REPORT_TEXT, project: "example-project" }).report;
   p.status = PR.STATUS.SEND_UNCONFIRMED; PR.savePendingReport(e.dir, p);
   const res = await reconcilePendingReport({
     config: {}, stateDir: e.stateDir, reportId: p.reportId, convId: "c9", checkpointFile: e.checkpointFile,
@@ -210,7 +210,7 @@ await record("R13 对账：报告不在对话 → PENDING（可稍后投递）",
 
 await record("R14 DOM 不可读但 relay 已发送凭证 → SENT（不重投）", async () => {
   const e = env("r14");
-  const p = PR.persistPendingReport({ dir: e.dir, text: REPORT_TEXT, project: "qwen-bench" }).report;
+  const p = PR.persistPendingReport({ dir: e.dir, text: REPORT_TEXT, project: "example-project" }).report;
   p.status = PR.STATUS.SEND_UNCONFIRMED; PR.savePendingReport(e.dir, p);
   fs.writeFileSync(path.join(e.stateDir, "relay_test.json"), JSON.stringify({ reportRef: p.hash, status: "SENT", targetUrl: "https://chatgpt.com/c/c9", textLen: REPORT_TEXT.length + 30 }), "utf8");
   const res = await reconcilePendingReport({

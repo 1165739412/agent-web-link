@@ -20,8 +20,8 @@
 
 ```
                  ┌──────────────┐        MCP (stdio)        ┌────────────────┐
-   外部 Agent ───▶│ mcp_server   │◀─────────────────────────▶│ qwen-bench 等   │
-   (qwen-bench)   │  (5 tools)   │                          │ MCP 客户端      │
+   外部 Agent ───▶│ mcp_server   │◀─────────────────────────▶│ example-project 等   │
+   (example-project)   │  (5 tools)   │                          │ MCP 客户端      │
                  └──────┬───────┘                           └────────────────┘
                         │ 调用
                  ┌──────▼───────┐   回环 + X-Auth-Token    ┌────────────────┐
@@ -130,7 +130,7 @@ npm run diag            # 诊断 CDP / 标签页 / 登录就绪状态（不发�
 ## 命名与兼容性
 
 - 公开项目名：**agent-web-link**。
-- 内部代号 `agent-link` 保留在：登记簿目录 `.agent-link`、MCP 工具前缀 `agent_link_`、MCP `serverInfo.name`（已对外呈现为 `agent-web-link`）。这是为兼容既有集成（如 `qwen-bench`）而刻意的，勿随意改名。
+- 内部代号 `agent-link` 保留在：登记簿目录 `.agent-link`、MCP 工具前缀 `agent_link_`、MCP `serverInfo.name`（已对外呈现为 `agent-web-link`）。这是为兼容既有集成（如 `example-project`）而刻意的，勿随意改名。
 
 ## 隐私与卫生（本仓库）
 

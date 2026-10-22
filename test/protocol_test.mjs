@@ -101,7 +101,7 @@ await record("P7 登记簿损坏 → 保守停止不静默重建", async () => {
 // ---- 执行器边界 ----
 const executor = makeExecutor({ projectRoot: path.join(SELF_DIR, ".."), log: () => {} });
 await record("P8 越界目标拒绝", async () => {
-  assert.ok(!executor.validateAction({ op: "node_check", target: "../qwen-bench/train.py" }).ok);
+  assert.ok(!executor.validateAction({ op: "node_check", target: "../example-project/train.py" }).ok);
   assert.ok(!executor.validateAction({ op: "node_check", target: "C:/Windows/system32/cmd.exe" }).ok);
   assert.ok(!executor.validateAction({ op: "shell", target: "rm -rf /" }).ok);
   assert.ok(!executor.validateAction({ op: "node_check", target: "test/不存在.mjs" }).ok);

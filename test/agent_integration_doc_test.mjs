@@ -67,13 +67,17 @@ record("D7 文档含可复制启动提示词与重启说明", () => {
   assert.ok(doc.includes("UNKNOWN_PROJECT") && doc.includes("TASK_NOT_FOUND"));
 });
 
-record("D8 文档真实演练值与证据文件一致", () => {
-  const ev = JSON.parse(fs.readFileSync(EV, "utf8"));
-  assert.equal(ev.pass, true, "演练未通过，文档真实值不可信");
-  const taskId = ev.steps.create.taskId;
-  const token = ev.steps.submit.report.reportToken;
-  assert.ok(doc.includes(taskId), `文档未包含真实 taskId ${taskId}`);
-  assert.ok(doc.includes(token), `文档未包含真实 reportToken ${token}`);
+record("D8 文档演练值为占位符，且不回显真实证据值", () => {
+  assert.ok(doc.includes("onboard-1"), "文档应使用占位 taskId onboard-1");
+  assert.ok(doc.includes("C3R-example"), "文档应使用占位 reportToken C3R-example");
+  // 隐私回归：本机证据文件若存在，文档不得回显其中的真实值
+  if (fs.existsSync(EV)) {
+    const ev = JSON.parse(fs.readFileSync(EV, "utf8"));
+    const realTask = ev && ev.steps && ev.steps.create && ev.steps.create.taskId;
+    const realToken = ev && ev.steps && ev.steps.submit && ev.steps.submit.report && ev.steps.submit.report.reportToken;
+    if (realTask) assert.ok(!doc.includes(realTask), `文档不应回显真实 taskId ${realTask}`);
+    if (realToken) assert.ok(!doc.includes(realToken), `文档不应回显真实 reportToken ${realToken}`);
+  }
 });
 
 record("D9 文档标注已实现/未验证/限制", () => {

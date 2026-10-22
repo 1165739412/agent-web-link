@@ -2,9 +2,9 @@
 // 安全约束：只删除「登记簿记录、且位于项目 tasksDir 之内」的报告文件；绝不删除登记簿或业务文件。
 //
 // 用法：
-//   npm run cleanup:reports -- --project qwen-bench                        # 预览（dry-run）
-//   npm run cleanup:reports -- --project qwen-bench --before 2026-10-01T00:00:00Z --yes
-//   npm run cleanup:reports -- --project qwen-bench --keep 20 --yes        # 保留最新 20 份
+//   npm run cleanup:reports -- --project example-project                        # 预览（dry-run）
+//   npm run cleanup:reports -- --project example-project --before 2026-10-01T00:00:00Z --yes
+//   npm run cleanup:reports -- --project example-project --keep 20 --yes        # 保留最新 20 份
 import fs from "node:fs";
 import path from "node:path";
 import { createTaskService, DEFAULT_PROJECTS_FILE, DEFAULT_TOKEN_FILE } from "./local_service.mjs";

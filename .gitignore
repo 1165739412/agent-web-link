@@ -11,7 +11,8 @@ test/log/
 test/tasks/
 test/service/
 test/projects.json
-test/qwen-bench.config.json
+test/*.config.json
+!test/project.config.json
 
 # 私人/真实配置与令牌
 *.token.txt

@@ -22,7 +22,7 @@ function realRegistryAvailable() {
   try {
     if (!fs.existsSync(DEFAULT_PROJECTS_FILE)) return false;
     const r = loadProjectsRegistry(DEFAULT_PROJECTS_FILE);
-    return r.ok && r.projects.has("agent-link") && r.projects.has("qwen-bench");
+    return r.ok && r.projects.has("agent-link") && r.projects.has("example-project");
   } catch { return false; }
 }
 const REAL = realRegistryAvailable();
@@ -59,22 +59,22 @@ function newService(projectsFile) {
 }
 function regOf(p) { return loadRegistry(path.join(p.tasksDir, "registry.json")); }
 
-// M1 真实注册表：agent-link + qwen-bench 均加载，根目录存在且执行器根一致
+// M1 真实注册表：agent-link + example-project 均加载，根目录存在且执行器根一致
 if (REAL) {
-await record("M1 真实注册表加载 agent-link + qwen-bench（路径真实、执行器根一致）", () => {
+await record("M1 真实注册表加载 agent-link + example-project（路径真实、执行器根一致）", () => {
   const r = loadProjectsRegistry(DEFAULT_PROJECTS_FILE);
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.ok(r.projects.has("agent-link"));
-  assert.ok(r.projects.has("qwen-bench"), "qwen-bench 未注册");
-  const p = r.projects.get("qwen-bench");
-  assert.ok(fs.existsSync(p.config.projectRoot), "qwen-bench 根目录不存在: " + p.config.projectRoot);
+  assert.ok(r.projects.has("example-project"), "example-project 未注册");
+  const p = r.projects.get("example-project");
+  assert.ok(fs.existsSync(p.config.projectRoot), "example-project 根目录不存在: " + p.config.projectRoot);
   assert.equal(path.resolve(p.executor.root), path.resolve(p.config.projectRoot));
   const svc = createTaskService({ projectsFile: DEFAULT_PROJECTS_FILE, tokenFile: DEFAULT_TOKEN_FILE, log: () => {} });
   const names = [...svc.projects].sort();
-  assert.ok(names.includes("agent-link") && names.includes("qwen-bench"), `缺少内置项目: ${names.join(",")}`);
+  assert.ok(names.includes("agent-link") && names.includes("example-project"), `缺少内置项目: ${names.join(",")}`);
   assert.deepEqual(svc.projectErrors, {});
 });
-} else { skips.push("SKIPPED M1 真实注册表（未提供 test/projects.json 或 qwen-bench 根目录）"); }
+} else { skips.push("SKIPPED M1 真实注册表（未提供 test/projects.json 或 example-project 根目录）"); }
 
 // M2 两项目分别创建/认领/提交报告（agent 模式，任务归属 project 显式记录）
 await record("M2 两项目分别创建/认领/提交报告，project 归属与报告隔离", async () => {
@@ -202,32 +202,32 @@ await record("M7 新 MCP 进程加载配置：已注册项目 TASK_NOT_FOUND，�
   assert.ok(t4.includes("UNKNOWN_PROJECT"), "未注册项目应报 UNKNOWN_PROJECT: " + t4);
 });
 
-// M8 真实 qwen-bench 路由（仅写 .agent-link 状态，不触碰业务代码/模型/权限）
+// M8 真实 example-project 路由（仅写 .agent-link 状态，不触碰业务代码/模型/权限）
 if (REAL) {
-await record("M8 真实 qwen-bench：注册→认领→提交报告，归属与目录隔离，agent-link 不受影响", async () => {
+await record("M8 真实 example-project：注册→认领→提交报告，归属与目录隔离，agent-link 不受影响", async () => {
   const svc = createTaskService({ projectsFile: DEFAULT_PROJECTS_FILE, tokenFile: DEFAULT_TOKEN_FILE, log: () => {} });
   const taskId = "route-qb-" + Date.now().toString(36);
-  const s = svc.submit({ project: "qwen-bench", taskId, summary: "多项目路由验证（真实 qwen-bench）", mode: "agent" });
+  const s = svc.submit({ project: "example-project", taskId, summary: "多项目路由验证（真实 example-project）", mode: "agent" });
   assert.equal(s.ok, true, JSON.stringify(s));
   assert.equal(s.execution, "agent");
-  const c = svc.claimNext({ project: "qwen-bench", claimedBy: "route-test" });
+  const c = svc.claimNext({ project: "example-project", claimedBy: "route-test" });
   assert.equal(c.task.taskId, taskId);
-  assert.equal(c.task.project, "qwen-bench");
-  const r = svc.submitResult({ project: "qwen-bench", taskId, ok: true, evidence: { route: "qwen-bench", at: new Date().toISOString() } });
+  assert.equal(c.task.project, "example-project");
+  const r = svc.submitResult({ project: "example-project", taskId, ok: true, evidence: { route: "example-project", at: new Date().toISOString() } });
   assert.equal(r.phase, PHASES.REPORTED);
-  assert.equal(r.report.project, "qwen-bench");
-  const cfg = svc.projectConfig("qwen-bench");
-  assert.ok(r.report && fs.existsSync(path.join(cfg.tasksDir, "reports", `${taskId}.json`)), "报告应写入 qwen-bench 自己的 tasksDir");
+  assert.equal(r.report.project, "example-project");
+  const cfg = svc.projectConfig("example-project");
+  assert.ok(r.report && fs.existsSync(path.join(cfg.tasksDir, "reports", `${taskId}.json`)), "报告应写入 example-project 自己的 tasksDir");
   // agent-link 登记簿不得出现该任务
   const regAgent = loadRegistry(path.join(svc.projectConfig("agent-link").tasksDir, "registry.json"));
-  assert.ok(!regAgent.tasks.some((t) => t.taskId === taskId), "qwen-bench 任务不得出现在 agent-link 登记簿");
-  // qwen-bench 登记簿记录 project
+  assert.ok(!regAgent.tasks.some((t) => t.taskId === taskId), "example-project 任务不得出现在 agent-link 登记簿");
+  // example-project 登记簿记录 project
   const regQb = loadRegistry(path.join(cfg.tasksDir, "registry.json"));
   const tq = regQb.tasks.find((t) => t.taskId === taskId);
-  assert.ok(tq, "qwen-bench 登记簿应含该任务");
-  assert.equal(tq.project, "qwen-bench");
+  assert.ok(tq, "example-project 登记簿应含该任务");
+  assert.equal(tq.project, "example-project");
 });
-} else { skips.push("SKIPPED M8 真实 qwen-bench 路由（未提供真实项目）"); }
+} else { skips.push("SKIPPED M8 真实 example-project 路由（未提供真实项目）"); }
 
 fs.rmSync(BASE, { recursive: true, force: true });
 if (skips.length) console.log(skips.join("\n"));

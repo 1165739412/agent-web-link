@@ -4,7 +4,7 @@
 > 目标：**不需要了解 agent-link 内部实现**，仅按本文档即可完成接入、提交任务、接收 GPT 决策并继续执行。
 >
 > 文档状态：基于仓库真实代码与本机真实演练编写。
-> 最后验证：2026-10-21，使用 `qwen-bench` 完成跨进程接入演练（真实值见第 9 节）。
+> 最后验证：2026-10-21，使用 `example-project` 完成跨进程接入演练（真实值见第 9 节）。
 > 如代码变更，请同步更新本文档并运行 `node test/agent_integration_doc_test.mjs` 校验。
 
 ---
@@ -31,7 +31,7 @@
 
 ## 2. 新项目首次接入步骤
 
-以下步骤均可直接照做（以 `qwen-bench` 为例）。
+以下步骤均可直接照做（以 `example-project` 为例）。
 
 ### 步骤 1：确认 agent-link MCP 服务可用
 
@@ -82,17 +82,17 @@
 
 ```json
 {
-  "name": "qwen-bench",
-  "config": "qwen-bench.config.json"
+  "name": "example-project",
+  "config": "example-project.config.json"
 }
 ```
 
-`config` 为相对 `projects.json` 的路径（或绝对路径）。对应配置文件 `<repo>/test/qwen-bench.config.json`：
+`config` 为相对 `projects.json` 的路径（或绝对路径）。对应配置文件 `<repo>/test/example-project.config.json`：
 
 ```json
 {
   "schemaVersion": 1,
-  "name": "qwen-bench",
+  "name": "example-project",
   "projectRoot": "<another-project>",
   "projectTests": [],
   "agentCommand": null,
@@ -121,8 +121,8 @@ MCP 为 **stdio 长驻进程，配置在启动时加载**。修改 `projects.jso
 
 ### 步骤 5：确认项目身份、登记簿与执行目录一致
 
-- 调用 `agent_link_claim_next_task { project: "qwen-bench" }`（无任务时返回 `task: null`）；
-- 成功后检查 `task.project === "qwen-bench"`；
+- 调用 `agent_link_claim_next_task { project: "example-project" }`（无任务时返回 `task: null`）；
+- 成功后检查 `task.project === "example-project"`；
 - 登记簿应位于 `<another-project>/.agent-link/tasks/registry.json`，报告位于同目录 `reports/<taskId>.json`；
 - 不应在 `<repo>/test/tasks/` 出现该项目任务。
 
@@ -140,13 +140,13 @@ MCP 为 **stdio 长驻进程，配置在启动时加载**。修改 `projects.jso
 curl -s -X POST http://127.0.0.1:8787/v1/tasks \
   -H "content-type: application/json" \
   -H "x-auth-token: <token.txt 内容>" \
-  -d '{"project":"qwen-bench","taskId":"onboard-qb-1","summary":"接入演练（无副作用）","mode":"agent"}'
+  -d '{"project":"example-project","taskId":"onboard-1","summary":"接入演练（无副作用）","mode":"agent"}'
 ```
 
 返回（真实结构）：
 
 ```json
-{ "ok": true, "taskId": "onboard-qb-1", "project": "qwen-bench", "phase": "NEW", "execution": "agent", "queuePosition": null }
+{ "ok": true, "taskId": "onboard-1", "project": "example-project", "phase": "NEW", "execution": "agent", "queuePosition": null }
 ```
 
 > 适用条件：调用方与本机服务同机（回环），且能读取服务令牌文件。
@@ -154,7 +154,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 
 ### 步骤 7：完成认领、报告提交、GPT 决策回传与验收
 
-1. 认领：调用 `agent_link_claim_next_task { project: "qwen-bench" }` → `task.taskId`。
+1. 认领：调用 `agent_link_claim_next_task { project: "example-project" }` → `task.taskId`。
 2. 执行：在 `projectRoot` 内完成实际工作（遵守白名单；不得越界）。
 3. 提交：调用 `agent_link_submit_result`（`project`、`taskId`、`ok`、非空 `evidence`）。
 4. 报告交给协调器转发 GPT（见第 5 节模板）；等待 GPT 决策。
@@ -201,7 +201,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 - 限流未做（回环 + 令牌 + 1MB 报告上限为当前天然保护）。请求示例：
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agent_link_get_task","arguments":{"project":"qwen-bench","taskId":"onboard-qb-1"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agent_link_get_task","arguments":{"project":"example-project","taskId":"onboard-1"}}}
 ```
 
 工具返回位于 `result.content[0].text`（JSON 字符串）；失败时 `result.isError=true`。
@@ -216,8 +216,8 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 {
   "ok": true,
   "task": {
-    "taskId": "onboard-qb-1",
-    "project": "qwen-bench",
+    "taskId": "onboard-1",
+    "project": "example-project",
     "summary": "接入演练（无副作用）",
     "actions": [],
     "createdAt": "2026-10-21T06:17:05.561Z",
@@ -247,8 +247,8 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 {
   "ok": true,
   "task": {
-    "taskId": "onboard-qb-1",
-    "project": "qwen-bench",
+    "taskId": "onboard-1",
+    "project": "example-project",
     "phase": "REPORTED",
     "execution": "agent",
     "claimedBy": "mcp",
@@ -282,12 +282,12 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
   "ok": true,
   "phase": "REPORTED",
   "report": {
-    "taskId": "onboard-qb-1",
-    "project": "qwen-bench",
+    "taskId": "onboard-1",
+    "project": "example-project",
     "status": "ACTIONS_DONE",
     "goalAchieved": false,
     "taskComplete": false,
-    "reportToken": "C3R-mvhpznve-f59522a5",
+    "reportToken": "C3R-example",
     "results": [],
     "evidence": { "rehearsal": true }
   }
@@ -421,7 +421,7 @@ evidenceRequired: <需要的证据>
 
 **已实现（有测试/真实证据）**
 - MCP 三工具：领取、查询、提交（真实跨进程演练通过）。
-- 多项目注册与路由隔离（`agent-link` 与 `qwen-bench` 各自登记簿/报告目录）。
+- 多项目注册与路由隔离（`agent-link` 与 `example-project` 各自登记簿/报告目录）。
 - 项目上下文一致性校验：注册/根目录/执行器根/任务归属（错误码明确）。
 - 配置更新需重启 MCP；新进程可正确加载（已用新进程验证）。
 - 报告转发、决策解析（CONTINUE/FIX/COMPLETE/STOP/ASK_USER + NEXT_ACTION）。
@@ -446,16 +446,16 @@ evidenceRequired: <需要的证据>
 - `found=true` → 已发送，只读最新回复，不重发；`found=false` → 可稍后用 `--deliver-file` 重投。
 - 崩溃/被杀导致 `SENDING` → 加载即转 `SEND_UNCONFIRMED`，不自动重发。
 
-## 9. 真实演练证据（实际运行值）
+## 9. 演练证据（示例占位值）
 
-> 以下为 2026-10-21 用 `qwen-bench` 的真实运行结果（`node test/onboard_rehearsal.mjs`），非示例数据。
-> 完整证据：`<repo>/test/state/onboard_rehearsal_evidence.json`
+> 以下为示例运行结果（占位值），用于说明字段与流程，不代表任何真实项目或会话。
+> 本机运行证据：`<repo>/test/state/onboard_rehearsal_evidence.json`（gitignored）
 
-- 健康检查：`200`，`projects=["agent-link","qwen-bench"]`
+- 健康检查：`200`，`projects=["agent-link","example-project"]`
 - `tools/list`：`agent_link_claim_next_task`、`agent_link_get_task`、`agent_link_submit_result`
-- 创建（HTTP，agent 模式）：`202`，`taskId=onboard-qb-mvhq15eh`，`phase=NEW`
-- 领取（MCP）：`taskId=onboard-qb-mvhq15eh`，`project=qwen-bench`
-- 提交（MCP）：`phase=REPORTED`，`report.project=qwen-bench`，`status=ACTIONS_DONE`，`reportToken=C3R-mvhq15es-b0226eef`
+- 创建（HTTP，agent 模式）：`202`，`taskId=onboard-1`，`phase=NEW`
+- 领取（MCP）：`taskId=onboard-1`，`project=example-project`
+- 提交（MCP）：`phase=REPORTED`，`report.project=example-project`，`status=ACTIONS_DONE`，`reportToken=C3R-example`
 - 状态核对：`phase=REPORTED`
 - 未注册项目：`UNKNOWN_PROJECT`（`项目未注册: not-registered`）
 
@@ -471,10 +471,10 @@ evidenceRequired: <需要的证据>
 | MCP 宿主注册 | `<repo>/test/mcp.register.json` |
 | 项目注册表 | `<repo>/test/projects.json` |
 | agent-link 配置 | `<repo>/test/project.config.json` |
-| qwen-bench 配置 | `<repo>/test/qwen-bench.config.json` |
+| example-project 配置 | `<repo>/test/example-project.config.json` |
 | 服务令牌 | `<repo>/test/service/token.txt` |
 | 本地服务 HTTP | `<repo>/test/local_service.mjs` |
 | 任务/报告（agent-link） | `<repo>/test/tasks/` |
-| 任务/报告（qwen-bench） | `<another-project>/.agent-link/tasks/` |
+| 任务/报告（example-project） | `<another-project>/.agent-link/tasks/` |
 | 接入演练脚本 | `<repo>/test/onboard_rehearsal.mjs` |
 | 文档一致性测试 | `<repo>/test/agent_integration_doc_test.mjs` |
