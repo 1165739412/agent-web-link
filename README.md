@@ -116,6 +116,7 @@ npm run diag            # 诊断 CDP / 标签页 / 登录就绪状态（不发�
 
 ## 开发与测试
 
+- `npm run register -- --name <name> --root <项目路径>`：新项目自注册（生成配置并登记，幂等；`--dry-run` 预览、`--emit-report` 生成脱敏复核报告）。也可在目标项目根目录直接运行 `node <agent-web-link>/test/register_project.mjs --name <name>`。
 - `npm test`：纯逻辑 + stdio 集成测试（不依赖浏览器）。
 - `npm run selftest`：MCP 闭环干跑自检（不需要浏览器/会话，验证 claim→submit→resources 是否健康）。
 - `npm run browser`：一键启动带 `--remote-debugging-port` 的 Chromium（Chrome/Edge），并打开目标网页。

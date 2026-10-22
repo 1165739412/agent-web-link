@@ -11,6 +11,21 @@
 
 **它们不是二选一的对立通道**：典型姿势是 MCP 管任务生命周期，relay 负责「把报告发给对手模型、拿回决策」。也可以只用 relay（像本仓库的 `ds_loop` 那样自建任务 id），但那样任务态不在 MCP 队列里，无法用 `claim/get/submit` 复核。**建议：需要可审计的领取-提交闭环时走 MCP；只是文本往返时可直接用 relay。**
 
+## 0.5 首次接入：项目自注册（本地 CLI）
+
+在目标项目根目录执行，不需要找人改 JSON：
+
+```bash
+node <agent-web-link>/test/register_project.mjs --name my-project
+# 或显式指定：node test/register_project.mjs --name my-project --root "D:/work/my-project"
+```
+
+- 生成 `<root>/.agent-link/project.config.json`（projectTests 为空、agentCommand=null、状态/任务目录在项目内）；
+- 幂等登记到 `test/projects.json`；同名同配置不重复，同名不同配置需 `--force`；
+- `--dry-run` 只预览；`--emit-report <file>` 生成**脱敏**复核报告（不含绝对路径）；
+- 复核：`DS_CONV=<会话ID> node test/send_to_ds.mjs <复核报告>`；再用 `npm run selftest` 验证闭环；
+- **刻意不做成 MCP 工具**：注册会写任意路径，必须由人执行，否则白名单边界形同虚设。
+
 ## 1. 材料契约（我们这版）
 
 `send_to_ds.mjs` 只接受**一个文件路径**，按字节原样读取：

@@ -23,6 +23,7 @@ const SUITES = [
   "relay_failure_test.mjs",         // 无 CDP 时显式 SKIP
   "context_limit_detect_test.mjs",  // 无 CDP 时显式 SKIP
   "selftest.mjs",                   // MCP 闭环干跑自检（不需要浏览器）
+  "register_project_test.mjs",      // 项目自注册 CLI
 ];
 
 let failed = 0;
