@@ -41,12 +41,13 @@
 - **阶段（phase）**：`NEW / QUEUED / RUNNING / REPORTED / FAILED / BLOCKED / REPORT_UNKNOWN`。
 - **报告（report）**：执行结果 + 可核验证据（evidence）。`ok=true` 只代表「动作已执行且有证据（`ACTIONS_DONE`）」，**不代表任务目标完成**——是否完成由人类/调度层判断。
 
-## MCP 服务（5 个工具）
+## MCP 服务（6 个工具）
 
 | 工具 | 只读 | 作用 |
 |---|---|---|
 | `agent_link_list_projects` | ✅ | 发现已注册项目与健康状态（不回显绝对路径/错误原文） |
 | `agent_link_list_tasks` | ✅ | 列出某项目任务（可按 `phase` 过滤，≤100 条） |
+| `agent_link_list_reports` | ✅ | 列出已产出报告的元数据（含摘要，不含路径；清理前清单） |
 | `agent_link_claim_next_task` | ❌ | 领取下一个 `NEW` 任务（`NEW→RUNNING`） |
 | `agent_link_get_task` | ✅ | 查询任务状态 |
 | `agent_link_submit_result` | ❌ | 提交结果与证据（必填 `evidence`） |
@@ -119,6 +120,8 @@ npm run diag            # 诊断 CDP / 标签页 / 登录就绪状态（不发�
 - `npm run selftest`：MCP 闭环干跑自检（不需要浏览器/会话，验证 claim→submit→resources 是否健康）。
 - `npm run browser`：一键启动带 `--remote-debugging-port` 的 Chromium（Chrome/Edge），并打开目标网页。
 - `npm run diag`：只诊断不发送（CDP 是否可达、有无聊天页、登录/输入框是否就绪），失败时给出可执行建议。
+- `npm run cleanup:reports -- --project <name> [--before <ISO>] [--keep N] [--yes]`：清理旧报告（默认 dry-run）。
+- 发送/决策/材料契约、MCP 与 relay 的关系见 [`docs/SEND_WORKFLOW.md`](docs/SEND_WORKFLOW.md)。
 - `npm run test:manual:browser`：需要已登录浏览器 + 配置 `DS_CONV` 的 DeepSeek 真实往返测试（**不会**自动运行，避免误发到私人会话）。
 - 测试套件各自独立，临时文件落在系统 `os.tmpdir()`，互不污染。
 - 常见问题（发送失败诊断、Windows 编码、Python 引号等）见 [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)。
@@ -145,7 +148,7 @@ npm run diag            # 诊断 CDP / 标签页 / 登录就绪状态（不发�
 
 It provides a neutral task hub with explicit phases (`NEW → RUNNING → REPORTED/FAILED`), per-project isolation, MCP/HTTP intake for agents, and CDP-based relay to web LLMs for human decisions. Every send carries a delivery receipt (runId / idempotent dedupe / reconciliation) to prevent duplicate or fake sends.
 
-- **MCP server**: 5 tools (`agent_link_list_projects`, `agent_link_list_tasks`, `agent_link_claim_next_task`, `agent_link_get_task`, `agent_link_submit_result`); stdio + JSON-RPC 2.0; strict `inputSchema` validation; lifecycle state machine.
+- **MCP server**: 6 tools (`agent_link_list_projects`, `agent_link_list_tasks`, `agent_link_list_reports`, `agent_link_claim_next_task`, `agent_link_get_task`, `agent_link_submit_result`); stdio + JSON-RPC 2.0; strict `inputSchema` validation; lifecycle state machine.
 - **Relay**: pluggable web adapters (ChatGPT, DeepSeek); user-chosen backend via `--backend` / `preferBackend`.
 - **Security**: loopback + `X-Auth-Token`; info-surface whitelist (no absolute paths / registry paths / error text in `list_projects`); post-send clearing verification; safe-fail on network errors.
 

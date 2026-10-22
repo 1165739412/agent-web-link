@@ -107,7 +107,7 @@ await record("M1 initialize + tools/list 真实握手，五个工具齐备（含
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
       "agent_link_claim_next_task", "agent_link_get_task", "agent_link_list_projects",
-      "agent_link_list_tasks", "agent_link_submit_result",
+      "agent_link_list_reports", "agent_link_list_tasks", "agent_link_submit_result",
     ]);
     const get = tools.find((t) => t.name === "agent_link_get_task");
     assert.equal(get.annotations.readOnlyHint, true, "get_task 应标注只读");

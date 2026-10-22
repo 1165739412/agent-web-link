@@ -32,6 +32,7 @@ function parseArgs(argv) {
 const INSTRUCTIONS = [
   "agent-link：跨项目任务队列。用法：先用 agent_link_list_projects 发现项目，",
   "再用 agent_link_list_tasks 查看某项目的任务（可按 phase 过滤），",
+  "agent_link_list_reports 列出已产出报告（只读，含任务摘要，便于识别/清理旧报告），",
   "agent_link_claim_next_task 领取（NEW→RUNNING，不会重复领取），",
   "agent_link_get_task 查询状态，agent_link_submit_result 提交结果（必须附非空证据）。",
   "注意：ok=true 仅代表动作已执行并有证据（ACTIONS_DONE），不代表任务目标完成。",
@@ -113,6 +114,48 @@ export const TOOLS = [
               execution: { type: ["string", "null"] },
               hasReport: { type: "boolean" },
               summary: { type: ["string", "null"] },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "agent_link_list_reports",
+    title: "列出项目报告",
+    description: "列出指定项目已产出报告的元数据（只读，不含文件路径；含任务摘要/报告令牌/完成时间）。用于识别 MCP 资源里的报告是什么、以及清理旧报告前的清单。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "已注册项目名", maxLength: 120 },
+        limit: { type: "number", description: "可选：返回条数上限（默认 20，最大 100）", minimum: 1, maximum: 100 },
+      },
+      required: ["project"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      required: ["ok", "project", "total", "returned", "reports"],
+      properties: {
+        ok: { type: "boolean" },
+        project: { type: "string" },
+        total: { type: "number" },
+        returned: { type: "number" },
+        reports: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["taskId", "phase"],
+            properties: {
+              taskId: { type: "string" },
+              phase: { type: "string" },
+              summary: { type: ["string", "null"] },
+              reportToken: { type: ["string", "null"] },
+              finishedAt: { type: ["string", "null"] },
+              createdAt: { type: ["string", "null"] },
             },
             additionalProperties: false,
           },
@@ -341,6 +384,7 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
       else if (name === "agent_link_get_task") res = service.status({ project: args.project, taskId: args.taskId });
       else if (name === "agent_link_list_projects") res = service.listProjects();
       else if (name === "agent_link_list_tasks") res = service.listTasks({ project: args.project, phase: args.phase || null, limit: args.limit ?? 20 });
+      else if (name === "agent_link_list_reports") res = service.listReports({ project: args.project, limit: args.limit ?? 20 });
       else res = service.submitResult({
         project: args.project, taskId: args.taskId, ok: args.ok,
         evidence: args.evidence, summary: args.summary ?? null, note: args.note ?? null,

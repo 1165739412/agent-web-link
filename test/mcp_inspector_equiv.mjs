@@ -75,8 +75,8 @@ function assertInit(res) {
 notify("notifications/initialized");
 
 const list = await request("tools/list", {});
-record("S2 tools/list：5 工具、每个含 inputSchema+outputSchema+annotations", () => {
-  if (list.result.tools.length !== 5) throw new Error(`工具数 ${list.result.tools.length} != 5`);
+record("S2 tools/list：6 工具、每个含 inputSchema+outputSchema+annotations", () => {
+  if (list.result.tools.length !== 6) throw new Error(`工具数 ${list.result.tools.length} != 6`);
   for (const t of list.result.tools) {
     if (!t.inputSchema || !t.outputSchema || !t.annotations) throw new Error(`${t.name} 缺 schema/注解`);
   }

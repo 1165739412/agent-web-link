@@ -453,6 +453,32 @@ export function createTaskService({
     return { ok: true, httpStatus: 200, project, total: reg.tasks.length, returned: items.length, tasks: items };
   }
 
+  // 报告列表（只读，不含文件路径）：供外部识别"这些资源是什么"，并作为清理前的清单。
+  function listReports({ project, limit = 20 } = {}) {
+    const p = proj(project);
+    if (!p) {
+      if (projectErrors[project]) return errOut(400, "PROJECT_CONFIG_INVALID", `项目 ${project} 配置未加载`);
+      return errOut(404, "UNKNOWN_PROJECT", `项目未注册: ${project}`);
+    }
+    let n = Number(limit);
+    if (!Number.isFinite(n) || n < 1) n = 20;
+    n = Math.min(Math.floor(n), 100);
+    const reg = loadRegistry(p.config.registryFile);
+    if (reg.ok === false) return errOut(500, "REGISTRY_CORRUPT", `项目登记簿损坏: ${reg.error}`);
+    const withRep = reg.tasks
+      .filter((t) => t.reportFile)
+      .sort((a, b) => String(b.finishedAt || b.createdAt || "").localeCompare(String(a.finishedAt || a.createdAt || "")));
+    const items = withRep.slice(0, n).map((t) => ({
+      taskId: t.taskId,
+      phase: t.phase,
+      summary: t.summary ? String(t.summary).slice(0, 200) : null,
+      reportToken: t.reportToken || null,
+      finishedAt: t.finishedAt || null,
+      createdAt: t.createdAt || null,
+    }));
+    return { ok: true, httpStatus: 200, project, total: withRep.length, returned: items.length, reports: items };
+  }
+
   async function executeJob(job) {
     const rp = resolveProject(job.project);
     if (!rp.ok) {
@@ -610,7 +636,7 @@ export function createTaskService({
     recovered,
     queueDepth: () => queue.length,
     isRunning: () => Boolean(running),
-    submit, status, report, claimNext, submitResult, listProjects, listTasks, start, awaitIdle,
+    submit, status, report, claimNext, submitResult, listProjects, listTasks, listReports, start, awaitIdle,
     stop: () => { stopping = true; },
   };
 }

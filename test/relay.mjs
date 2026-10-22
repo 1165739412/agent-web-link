@@ -22,6 +22,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const RELAY_CONFIG_DEFAULT = path.join(__dirname, "relay.config.json");
 export const CDP_DEFAULT = "http://127.0.0.1:9222";
 
+const RELAY_USAGE = `用法: node test/relay.mjs [--report-file <f> | --text <s>] [--conv <id>] [--backend deepseek|chatgpt]
+       [--json-out <f>] [--config <f>] [--state-dir <dir>] | --probe [--conv <id>] | --diag | --probe-url <url>
+
+  --report-file/--text  发送内容（二选一）
+  --conv <id>           只发送到包含该会话 ID 的标签页
+  --backend <id>        首选后端（chatgpt/deepseek），优先于 config.preferBackend
+  --probe               就绪探测（不带 --conv 走就绪门；带 --conv 与发送同路径）
+  --diag                仅诊断 CDP/标签页/登录就绪，不发送
+  --probe-url <url>     导航到指定 URL 后探测
+  -h, --help            显示本帮助
+
+输出: RELAY_RESULT <json>（stdout）；日志一律 stderr。
+文档: docs/SEND_WORKFLOW.md、docs/TROUBLESHOOTING.md`;
+
 // 默认后端（保持向后兼容：不传 backend 时按 ChatGPT 处理）
 const CG = CHATGPT;
 const readSelOf = (b) => ({ user: b.user, assistant: b.assistant, assistantIdAttr: b.assistantIdAttr, regionMarker: b.regionMarker });
@@ -405,7 +419,7 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
 
 // ---- CLI ----
 function parseArgs(argv) {
-  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, probe: false, probeUrl: null, backend: null, diag: false };
+  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, probe: false, probeUrl: null, backend: null, diag: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report-file") out.reportFile = argv[++i];
     else if (argv[i] === "--text") out.text = argv[++i];
@@ -417,6 +431,7 @@ function parseArgs(argv) {
     else if (argv[i] === "--probe") out.probe = true;
     else if (argv[i] === "--probe-url") out.probeUrl = argv[++i];
     else if (argv[i] === "--diag") out.diag = true;
+    else if (argv[i] === "--help" || argv[i] === "-h") out.help = true;
   }
   return out;
 }
@@ -424,6 +439,7 @@ function parseArgs(argv) {
 const __isMain = process.argv[1] && fileURLToPath(import.meta.url).toLowerCase() === path.resolve(process.argv[1]).toLowerCase();
 if (__isMain) {
   const opts = parseArgs(process.argv.slice(2));
+  if (opts.help) { console.log(RELAY_USAGE); process.exit(0); }
   const loaded = loadRelayConfig({ file: opts.configFile || RELAY_CONFIG_DEFAULT });
   if (!loaded.ok) { console.error("CFG_ERROR " + loaded.error); process.exit(64); }
   const config = loaded.config;

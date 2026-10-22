@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildLoopReport, makeWorkerExec, parseDecision, sigOf, listCandidateTargets } from "./auto_loop.mjs";
+import { buildLoopReport, makeWorkerExec, parseDecision, sigOf, listCandidateTargets, DECISIONS } from "./auto_loop.mjs";
 import { loadRelayConfig, sendAndRead } from "./relay.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -130,11 +130,15 @@ for (let round = 1; round <= opts.maxRounds; round++) {
   if (parsed.decision === "COMPLETE" || parsed.decision === "STOP") { stopReason = parsed.decision; break; } // DS 自己的终止信号
   if (parsed.decision === "ASK_USER") { stopReason = "ASK_USER"; break; }
   if (parsed.decision === "CONTINUE" || parsed.decision === "FIX") {
-    if (!parsed.nextAction) { stopReason = "NO_ACTION_IN_REPLY"; break; }
+    if (!parsed.nextAction) {
+      log(`[DS_LOOP] decision=${parsed.decision} 但缺少可解析的 NEXT_ACTION（回复片段: ${replyText.slice(0, 120)}）`);
+      stopReason = "NO_ACTION_IN_REPLY"; break;
+    }
     action = parsed.nextAction;
     if (round < opts.maxRounds) await new Promise((r) => setTimeout(r, opts.intervalMs));
     continue;
   }
+  log(`[DS_LOOP] 决策无法解析：raw=${JSON.stringify(parsed.rawDecision)}（有效值: ${DECISIONS.join("/")}）`);
   stopReason = "UNPARSEABLE_DECISION"; break;
 }
 if (!stopReason) stopReason = "MAX_ROUNDS";

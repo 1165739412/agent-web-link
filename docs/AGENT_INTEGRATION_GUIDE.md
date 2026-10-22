@@ -53,20 +53,21 @@
 }
 ```
 
-确认服务可用：调用 `initialize` 应返回 `serverInfo.name = "agent-link"`。
+确认服务可用：调用 `initialize` 应返回 `serverInfo.name = "agent-web-link"`。
 
 ### 步骤 2：让宿主发现并读取真实工具 schema
 
-对 MCP 服务发送 JSON-RPC `tools/list`（stdio，换行分隔 JSON），即可获得**真实 schema**。当前共 5 个工具：
+对 MCP 服务发送 JSON-RPC `tools/list`（stdio，换行分隔 JSON），即可获得**真实 schema**。当前共 6 个工具：
 
 - `agent_link_list_projects`（发现项目与健康状态，只读）
 - `agent_link_list_tasks`（按项目列任务，只读，可按 phase 过滤）
+- `agent_link_list_reports`（按项目列已产出报告，只读，含摘要）
 - `agent_link_claim_next_task`
 - `agent_link_get_task`
 - `agent_link_submit_result`
 
 > **兼容性提示（升级自 3 工具版本时必读）**：
-> 1. 工具数量从 3 → 5，若宿主/脚本对 `tools/list` 数量做硬断言需要同步更新；
+> 1. 工具数量从 3 → 6，若宿主/脚本对 `tools/list` 数量做硬断言需要同步更新；
 > 2. 服务器现在**强制校验工具入参**（按 inputSchema）：缺必填、类型不符、未知参数一律返回
 >    JSON-RPC `-32602`，不再透传给服务层；
 > 3. 服务器强制**生命周期状态机**：`initialize` 必须是首个请求，初始化完成前除 `ping` 外的请求
@@ -308,6 +309,14 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 - **返回**：按创建时间倒序的 `tasks: [{ taskId, phase, createdAt, submittedAt, claimedBy, claimedAt, execution, hasReport, summary(截断 200 字) }]` + `total`/`returned`。
 - **失败**：`UNKNOWN_PROJECT` / `REGISTRY_CORRUPT`。
 
+### 3.6 `agent_link_list_reports`（只读）
+
+- **用途/时机**：识别 MCP 资源里 `agent-link://report/...` 到底是什么、以及清理旧报告前的清单。
+- **必填**：`project`。**可选**：`limit`（默认 20，≤100）。
+- **返回**：按完成时间倒序的 `reports: [{ taskId, phase, summary(截断 200 字), reportToken, finishedAt, createdAt }]` + `total`/`returned`；**不含文件路径**。
+- **清理**：MCP 不提供删除工具（破坏性操作不进协议）。用 `npm run cleanup:reports -- --project <name> --before <ISO> [--keep N] [--yes]`，默认 dry-run。
+- **失败**：`UNKNOWN_PROJECT` / `PROJECT_CONFIG_INVALID` / `REGISTRY_CORRUPT`。
+
 ---
 
 ## 4. 项目 Agent 的标准工作流程
@@ -380,7 +389,7 @@ evidenceRequired: <需要的证据>
 你是「<项目名>」项目的执行 Agent。请遵守以下规则，独立完成接入与执行，不要依赖任何历史对话：
 
 1. 先阅读 <repo>/docs/AGENT_INTEGRATION_GUIDE.md，按其步骤工作。
-2. 通过 MCP tools/list 读取 agent-link 的**真实**工具 schema；只使用真实存在的工具（list_projects / list_tasks / claim_next_task / get_task / submit_result）。不存在 create_task 工具。
+2. 通过 MCP tools/list 读取 agent-link 的**真实**工具 schema；只使用真实存在的工具（list_projects / list_tasks / list_reports / claim_next_task / get_task / submit_result）。不存在 create_task 工具。
 3. 检查本项目是否已在 <repo>/test/projects.json 注册，且 projectRoot 指向真实目录；若未注册，先报告所需配置（不要猜路径）。
 4. 所有任务操作必须显式传 project="<项目名>"；核对返回的 task.project 与本项目一致；只在 projectRoot 内执行白名单操作（node_check / run_project_tests），绝不越界。
 5. 领取任务用 agent_link_claim_next_task；执行后用 agent_link_submit_result 提交**非空证据**；ok=true 只表示动作已执行，不代表目标完成。

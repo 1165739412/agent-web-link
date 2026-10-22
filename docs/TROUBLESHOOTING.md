@@ -2,6 +2,8 @@
 
 面向在本机使用网页中继（ChatGPT / DeepSeek）和 MCP 工具时最常见的问题。原则：**先诊断，再发送；发送之后的失败不自动重试**（避免重复消息）。
 
+> 所有 CLI 都自带 `--help`：`node test/send_to_ds.mjs --help`、`node test/relay.mjs --help`、`node test/start-browser.mjs --help`、`node test/cleanup_reports.mjs --help`。
+
 ## 1. 发送失败：三步定位
 
 不要一上来就猜"没登录"。按顺序执行，每步都会给出可执行建议：
@@ -80,6 +82,16 @@ npm run browser -- --port 9222 --url https://chat.deepseek.com/
 `agent_link_list_projects` 现在返回 `configErrors: [{ project, message }]`，其中 `message` 已**脱敏**（绝对路径替换为 `<path>`）。定位到具体项目后，查看服务端 stderr 日志获取完整原因。
 
 资源列表（`resources/list`）的 `description` 现在带任务摘要（前 80 字），便于辨认 `agent-link://report/...` 到底是哪个任务。
+
+要系统查看某项目有哪些报告，用只读工具 `agent_link_list_reports`（含摘要/令牌/完成时间，不含路径）；清理旧报告用：
+
+```bash
+npm run cleanup:reports -- --project <name>                        # dry-run 预览
+npm run cleanup:reports -- --project <name> --before 2026-10-01T00:00:00Z --yes
+npm run cleanup:reports -- --project <name> --keep 20 --yes        # 保留最新 20 份
+```
+
+清理只删除「登记簿记录、且位于项目 tasksDir 内」的报告文件，并清空 `reportFile/reportToken`（任务记录保留）；不提供 MCP 删除工具，破坏性操作不进协议。
 
 闭环健康自检（不依赖浏览器）：
 

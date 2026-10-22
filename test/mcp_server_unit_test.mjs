@@ -24,6 +24,7 @@ const service = {
     const filtered = all.filter((t) => !phase || t.phase === phase).slice(0, limit || 20);
     return { ok: true, project, total: all.length, returned: filtered.length, tasks: filtered };
   },
+  listReports: ({ project, limit }) => ({ ok: true, project, total: 1, returned: 1, reports: [{ taskId: "t2", phase: "REPORTED", summary: "s", reportToken: "C3R-x", finishedAt: null, createdAt: null }].slice(0, limit || 20) }),
   report: ({ project, taskId }) => (project === "p1" && taskId === "t2"
     ? { ok: true, report: { taskId, project, status: "ACTIONS_DONE", evidence: { src: "stub" } } }
     : { ok: false, code: project === "p1" ? "REPORT_NOT_FOUND" : "UNKNOWN_PROJECT", message: "桩：仅 p1/t2 有报告" }),
@@ -55,12 +56,12 @@ record("V4 SUPPORTED 版本表降序且包含 2024-11-05", () => {
 });
 
 // ---- 工具清单与注解 ----
-record("V5 tools/list 含 5 个工具且 get_task 有 readOnly 注解", () => {
+record("V5 tools/list 含 6 个工具且 get_task 有 readOnly 注解", () => {
   const r = call(service, { jsonrpc: "2.0", id: 2, method: "tools/list" });
   const names = r.result.tools.map((t) => t.name);
   assert.deepEqual(names, [
-    "agent_link_list_projects", "agent_link_list_tasks", "agent_link_claim_next_task",
-    "agent_link_get_task", "agent_link_submit_result",
+    "agent_link_list_projects", "agent_link_list_tasks", "agent_link_list_reports",
+    "agent_link_claim_next_task", "agent_link_get_task", "agent_link_submit_result",
   ]);
   const g = r.result.tools.find((t) => t.name === "agent_link_get_task");
   assert.equal(g.annotations.readOnlyHint, true);

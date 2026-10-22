@@ -29,7 +29,7 @@ record("D1 文档存在且为中文正式入口", () => {
 
 record("D2 文档列出全部真实 MCP 工具名", () => {
   for (const t of TOOLS) assert.ok(doc.includes(t.name), `缺少工具 ${t.name}`);
-  assert.equal(TOOLS.length, 5, "MCP 工具应为 5 个（含 list_projects/list_tasks）");
+  assert.equal(TOOLS.length, 6, "MCP 工具应为 6 个（含 list_projects/list_tasks/list_reports）");
 });
 
 record("D3 文档明确无创建任务 MCP 工具，并给出真实入口", () => {

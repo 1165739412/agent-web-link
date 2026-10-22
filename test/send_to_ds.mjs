@@ -22,19 +22,38 @@ const PRE_SEND = new Set([
 const isPreSend = (reason) => PRE_SEND.has(reason) || /^读取基线失败/.test(reason || "");
 
 function parseArgs(argv) {
-  const out = { file: null, conv: null, retries: 0, retryDelayMs: 3000, diag: false };
+  const out = { file: null, conv: null, retries: 0, retryDelayMs: 3000, diag: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--conv") out.conv = argv[++i];
     else if (a === "--retries") out.retries = Math.max(0, parseInt(argv[++i], 10) || 0);
     else if (a === "--retry-delay-ms") out.retryDelayMs = Math.max(0, parseInt(argv[++i], 10) || 0);
     else if (a === "--diag") out.diag = true;
+    else if (a === "--help" || a === "-h") out.help = true;
     else if (!out.file) out.file = a;
   }
   return out;
 }
 
+const USAGE = `用法: DS_CONV=<会话ID> node test/send_to_ds.mjs <消息文件> [--retries N] [--conv <id>]
+      node test/send_to_ds.mjs --diag
+
+选项:
+  --conv <id>          指定 DeepSeek 会话 ID（也可用环境变量 DS_CONV）
+  --retries N          仅对"发送前"失败重试（默认 0；发送后失败绝不重发）
+  --retry-delay-ms N   重试间隔毫秒（默认 3000）
+  --diag               只诊断 CDP/标签页/登录就绪，不发送
+  -h, --help           显示本帮助
+
+约定:
+  - 消息文件按字节原样读取，不做 glob/命名规则（不存在 <CODE>_*.txt 之类隐式契约）；
+  - stdout 输出 DS_ROUND JSON（含完整 replyText 与 recordFile 完整记录路径）；
+  - 失败时输出 DIAG 区块（CDP 是否可达 / 是否找到会话 / 是否就绪 / 可执行建议）。
+依赖: 本机 Chromium（Chrome/Edge）以 --remote-debugging-port=9222 运行；用 npm run browser 一键启动。
+文档: docs/SEND_WORKFLOW.md、docs/TROUBLESHOOTING.md`;
+
 const opts = parseArgs(process.argv.slice(2));
+if (opts.help) { console.log(USAGE); process.exit(0); }
 const cfg = loadRelayConfig().config;
 cfg.replyTimeoutMs = 120000; cfg.pollMs = 1500; cfg.stableNeed = 2;
 const cdpHost = cfg.cdpHost || CDP_DEFAULT;

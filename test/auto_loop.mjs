@@ -31,7 +31,10 @@ export function parseDecision(text) {
     m = t.match(/node\s*--?check\s+([A-Za-z0-9_./\\-]+\.(?:mjs|js|cjs))/i);
     if (m) nextAction = { op: "node_check", target: cleanTarget(m[1]) };
   }
-  return { decision, nextAction };
+  // 记录原始 decision 片段：区分"没有给出决策"与"决策非法/写成 ?"（反馈：decision=? 无校验）
+  const anyDec = [...t.matchAll(/decision\s*[:：]\s*([^\s\n#，,。;；]+)/gi)];
+  const rawDecision = anyDec.length ? anyDec[anyDec.length - 1][1].trim() : null;
+  return { decision, nextAction, rawDecision, valid: !!decision };
 }
 
 function cleanTarget(s) {

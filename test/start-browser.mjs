@@ -15,6 +15,19 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
+if (argv.includes("--help") || argv.includes("-h")) {
+  console.log(`用法: node test/start-browser.mjs [--backend deepseek|chatgpt] [--port 9222] [--url <url>] [--profile <dir>] [--timeout <ms>]
+
+  --backend     默认打开的网站（deepseek|chatgpt，默认 deepseek）
+  --port        CDP 端口（默认 9222，或环境变量 CDP_PORT）
+  --url         覆盖要打开的 URL
+  --profile     独立浏览器 profile 目录（默认 test/browser-profile，已 gitignore）
+  --timeout     等待 CDP 就绪的上限毫秒（默认 25000）
+  -h, --help    显示本帮助
+
+环境变量: AGENT_WEB_LINK_BROWSER（浏览器可执行文件）、AGENT_WEB_LINK_PROFILE、CDP_PORT`);
+  process.exit(0);
+}
 const argOf = (name, def) => { const i = argv.indexOf(name); return i >= 0 && argv[i + 1] ? argv[i + 1] : def; };
 
 const port = parseInt(argOf("--port", process.env.CDP_PORT || "9222"), 10) || 9222;

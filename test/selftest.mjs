@@ -49,9 +49,9 @@ await step("S1 initialize 协商 2025-06-18", () => {
   assert.equal(r.result.protocolVersion, "2025-06-18");
   assert.equal(r.result.serverInfo.name, "agent-web-link");
 });
-await step("S2 tools/list 含 5 个工具", () => {
+await step("S2 tools/list 含 6 个工具", () => {
   const r = call({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-  assert.equal(r.result.tools.length, 5);
+  assert.equal(r.result.tools.length, 6);
   assert.equal(r.result.tools.length, TOOLS.length);
 });
 await step("S3 list_projects 发现 selftest", () => {
@@ -94,6 +94,13 @@ await step("S9 submit_result → REPORTED 且证据落盘", () => {
   });
   assert.equal(o.ok, true, JSON.stringify(o));
   assert.equal(o.phase, "REPORTED");
+});
+await step("S9b list_reports 能看到该报告（含摘要）", () => {
+  const o = callTool("agent_link_list_reports", { project: "selftest" });
+  assert.equal(o.ok, true);
+  const r = o.reports.find((x) => x.taskId === taskId);
+  assert.ok(r, "报告应出现在 list_reports");
+  assert.equal(r.phase, "REPORTED");
 });
 await step("S10 resources/list 含该报告", () => {
   const r = call({ jsonrpc: "2.0", id: 10, method: "resources/list" });
