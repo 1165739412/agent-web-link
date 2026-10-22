@@ -13,7 +13,19 @@ const ROOT = path.resolve(__dirname, "..");
 const BASE = fs.mkdtempSync(path.join(os.tmpdir(), "agent-link-route-"));
 
 const results = [];
+const skips = [];
 let passed = 0;
+
+// 真实注册表（test/projects.json + 目标项目根）仅在本地存在时启用；开源默认环境跳过这些用例，
+// 避免默认测试依赖私有配置/外部项目（新克隆不应失败）。
+function realRegistryAvailable() {
+  try {
+    if (!fs.existsSync(DEFAULT_PROJECTS_FILE)) return false;
+    const r = loadProjectsRegistry(DEFAULT_PROJECTS_FILE);
+    return r.ok && r.projects.has("agent-link") && r.projects.has("qwen-bench");
+  } catch { return false; }
+}
+const REAL = realRegistryAvailable();
 async function record(name, fn) {
   try { await fn(); passed++; results.push(`PASS ${name}`); }
   catch (e) { results.push(`FAIL ${name} :: ${e.message}`); }
@@ -48,6 +60,7 @@ function newService(projectsFile) {
 function regOf(p) { return loadRegistry(path.join(p.tasksDir, "registry.json")); }
 
 // M1 真实注册表：agent-link + qwen-bench 均加载，根目录存在且执行器根一致
+if (REAL) {
 await record("M1 真实注册表加载 agent-link + qwen-bench（路径真实、执行器根一致）", () => {
   const r = loadProjectsRegistry(DEFAULT_PROJECTS_FILE);
   assert.equal(r.ok, true, JSON.stringify(r));
@@ -60,6 +73,7 @@ await record("M1 真实注册表加载 agent-link + qwen-bench（路径真实、
   assert.deepEqual([...svc.projects].sort(), ["agent-link", "qwen-bench"]);
   assert.deepEqual(svc.projectErrors, {});
 });
+} else { skips.push("SKIPPED M1 真实注册表（未提供 test/projects.json 或 qwen-bench 根目录）"); }
 
 // M2 两项目分别创建/认领/提交报告（agent 模式，任务归属 project 显式记录）
 await record("M2 两项目分别创建/认领/提交报告，project 归属与报告隔离", async () => {
@@ -188,6 +202,7 @@ await record("M7 新 MCP 进程加载配置：已注册项目 TASK_NOT_FOUND，�
 });
 
 // M8 真实 qwen-bench 路由（仅写 .agent-link 状态，不触碰业务代码/模型/权限）
+if (REAL) {
 await record("M8 真实 qwen-bench：注册→认领→提交报告，归属与目录隔离，agent-link 不受影响", async () => {
   const svc = createTaskService({ projectsFile: DEFAULT_PROJECTS_FILE, tokenFile: DEFAULT_TOKEN_FILE, log: () => {} });
   const taskId = "route-qb-" + Date.now().toString(36);
@@ -211,8 +226,10 @@ await record("M8 真实 qwen-bench：注册→认领→提交报告，归属与�
   assert.ok(tq, "qwen-bench 登记簿应含该任务");
   assert.equal(tq.project, "qwen-bench");
 });
+} else { skips.push("SKIPPED M8 真实 qwen-bench 路由（未提供真实项目）"); }
 
 fs.rmSync(BASE, { recursive: true, force: true });
+if (skips.length) console.log(skips.join("\n"));
 console.log(results.join("\n"));
 const failed = results.filter((r) => r.startsWith("FAIL"));
 console.log(`\n合计: ${results.length - failed.length}/${results.length} 通过${failed.length ? " (有失败)" : ""}`);

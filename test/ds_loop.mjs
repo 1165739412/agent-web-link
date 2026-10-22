@@ -109,12 +109,16 @@ for (let round = 1; round <= opts.maxRounds; round++) {
   }
   const replyText = (relay && relay.replyText) || "";
   const parsed = parseDecision(replyText);
+  // nonce 回显校验（防串话/截断）：回复应原样包含本轮 nonce（task_id）。
+  // 未回显时只告警不中断（决策仍可能有效），但记录到 nonceVerified 便于事后审计。
+  const nonceVerified = replyText.includes(nonce);
+  if (!nonceVerified) log(`[DS_LOOP] 警告：回复未回显 task_id=${nonce}（可能存在串话/截断/历史回复干扰）`);
   const rec = {
     round, action, signature: sig, taskId: ex && ex.taskId, status: ex && ex.status, exitCode: ex && ex.exitCode,
     relayOk: !!(relay && relay.ok), relayRunId: relay && relay.runId, relayReplyId: relay && relay.replyId,
     unconfirmedReply: unconfirmed || !!(relay && relay.unconfirmedReply),
     backend: relay && relay.backend, fallback: !!(relay && relay.fallback),
-    decision: parsed.decision, nextAction: parsed.nextAction, replyText: replyText.slice(0, 4000),
+    decision: parsed.decision, nextAction: parsed.nextAction, nonceVerified, replyText: replyText.slice(0, 4000),
     at: new Date().toISOString(),
   };
   rounds.push(rec);

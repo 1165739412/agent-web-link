@@ -68,6 +68,13 @@ node test/relay.mjs --report-file <file> --backend deepseek   # 单次覆盖配�
    生产路径 `relay.sendAndRead` 真实全链路（回复带唯一 nonce）；
 4. 跑全量回归，确认 `relay_test`/`relay_failure_test`/`context_limit_detect_test` 无退化。
 
+## 发送前诊断与浏览器启动（2026-10-22）
+
+- 一键启动调试浏览器：`npm run browser`（自动探测 Chrome/Edge/Chromium，开 9222，profile=`test/browser-profile/`，已 gitignore）。
+- 只诊断不发送：`npm run diag`（= `node test/send_to_ds.mjs --diag`）；按会话探测：`node test/relay.mjs --probe --conv <id>`。
+- 失败返回新增 `hint`（人话 + 可执行建议）；`send_to_ds` 只对"发送前"失败重试，发送之后一律不自动重发。
+- 语义提醒：`--probe`（无 `--conv`）走**就绪门**；`sendAndRead(preferConvId)` 按会话**直连**、不强制就绪门。二者结论不一致属正常，"probe 为 false"不代表不能发送。
+
 ## 已知限制
 
 - DeepSeek 耗尽文案（`limitPatterns`）尚未在真实耗尽场景验证（无法按需复现），模式偏保守；

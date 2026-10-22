@@ -3,6 +3,7 @@ node_modules/
 
 # 浏览器调试 Profile（含登录态 cookie，绝不入库）
 .chrome-profile/
+test/browser-profile/
 
 # 运行态数据（含真实会话 ID、令牌、任务/报告数据、对话回执）—— 不入库
 test/state/

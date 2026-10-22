@@ -16,6 +16,7 @@ import {
   typeIntoComposer as _typeIntoComposer, clickSendOnce as _clickSendOnce,
   detectContextLimit as _detectContextLimit, readNewReply as _readNewReply,
 } from "./agent_backends.mjs";
+import { diagnose, explainReason } from "./relay_diagnostics.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const RELAY_CONFIG_DEFAULT = path.join(__dirname, "relay.config.json");
@@ -125,7 +126,7 @@ export async function resolveTarget({ config, log = () => {}, preferBackend = nu
   const patterns = chatPageUrlPatterns(backends);
   const list = await (await fetch(cdp + "/json/list")).json();
   const pick = pickTargetPage(list, config, preferBackend);
-  if (!pick.ok) return { ok: false, reason: pick.reason };
+  if (!pick.ok) return { ok: false, reason: pick.reason, hint: explainReason(pick.reason, { cdpHost: config.cdpHost || CDP_DEFAULT }) };
 
   let page = pick.page;
   let ready = await probePage(page, selectBackend(page.url, backends) || CG);
@@ -156,7 +157,7 @@ export async function resolveTarget({ config, log = () => {}, preferBackend = nu
       const r2 = await probePage(p2, selectBackend(p2.url, backends) || CG);
       if (r2.ready) { log(`[RELAY] 回退到备用就绪对话 ${id}`); return { ok: true, page: p2, url: p2.url, ready: r2, how: "fallback", backendId: (selectBackend(p2.url, backends) || {}).id }; }
     }
-    return { ok: false, reason: "NO_READY_CONVERSATION", pageUrl: page.url, detail: ready };
+    return { ok: false, reason: "NO_READY_CONVERSATION", pageUrl: page.url, detail: ready, hint: explainReason("NO_READY_CONVERSATION", { cdpHost: config.cdpHost || CDP_DEFAULT }) };
   }
   // DS 决策②③：preferBackend 无就绪页面而回退时，告警日志而非静默降级
   const chosen = selectBackend(page.url, backends) || CG;
@@ -252,10 +253,12 @@ export async function createNewConversation({ config, log = () => {}, attempts =
 // 支持 preferConvId（定向到指定对话）与 overridePage（刚新建、尚无 /c/id 的页面）
 export async function sendAndRead({ config, text, stateDir, log = () => {}, preferConvId = null, overridePage = null, reportRef = null, preferBackend = null }) {
   const runId = `r-relay-${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
+  const cdpHost = config.cdpHost || CDP_DEFAULT;
   const guard = checkRelayGuard(stateDir);
-  if (!guard.ok) { log(`[RELAY] 护栏阻断: ${guard.reason}`); return { ok: false, reason: guard.reason, runId }; }
+  if (!guard.ok) { log(`[RELAY] 护栏阻断: ${guard.reason}`); return { ok: false, reason: guard.reason, hint: guard.reason, runId }; }
 
   let tgt;
+  let convMissing = false;
   if (overridePage) {
     tgt = { ok: true, page: overridePage, url: overridePage.url || "", how: "override" };
   } else {
@@ -263,11 +266,15 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
     if (preferConvId) {
       const list = await (await fetch((config.cdpHost || CDP_DEFAULT) + "/json/list")).json();
       page = list.find((t) => t.type === "page" && String(t.url || "").includes(preferConvId));
+      if (!page) { convMissing = true; log(`[RELAY] 未找到会话 ${preferConvId} 的标签页，将回退到其他就绪会话（请确认 DS_CONV 正确）`); }
     }
     if (page) tgt = { ok: true, page, url: page.url, how: "preferConvId" };
     else {
       tgt = await resolveTarget({ config, log, preferBackend });
-      if (!tgt.ok) { log(`[RELAY] 目标解析失败: ${tgt.reason}`); return { ok: false, reason: tgt.reason, runId, detail: tgt }; }
+      if (!tgt.ok) {
+        log(`[RELAY] 目标解析失败: ${tgt.reason}`);
+        return { ok: false, reason: tgt.reason, runId, detail: tgt, convMissing, hint: tgt.hint || explainReason(tgt.reason, { cdpHost }) };
+      }
     }
   }
 
@@ -312,11 +319,11 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
     }
     if (!switched) {
       try { await c.close("relay-net-preflight"); } catch {}
-      return { ok: false, reason: "NETWORK_UNAVAILABLE", network: netPre, runId, targetUrl: tgt.url, backend: backend.id, fallback: fallbackUsed };
+      return { ok: false, reason: "NETWORK_UNAVAILABLE", network: netPre, runId, targetUrl: tgt.url, backend: backend.id, fallback: fallbackUsed, hint: explainReason("NETWORK_UNAVAILABLE", { cdpHost }) };
     }
   } else if (netPre && netPre.unavailable) {
     await c.close("relay-net-preflight");
-    return { ok: false, reason: "NETWORK_UNAVAILABLE", network: netPre, runId, targetUrl: tgt.url, backend: backend.id, fallback: fallbackUsed };
+    return { ok: false, reason: "NETWORK_UNAVAILABLE", network: netPre, runId, targetUrl: tgt.url, backend: backend.id, fallback: fallbackUsed, hint: explainReason("NETWORK_UNAVAILABLE", { cdpHost }) };
   }
   const textHash = createHash("sha256").update(text || "", "utf8").digest("hex").slice(0, 16);
   const rec = { recordType: "relay", schemaVersion: 1, runId, targetUrl: tgt.url, how: tgt.how, status: "SENDING", startedAt: new Date().toISOString(), textLen: (text || "").length, textHash, reportRef, backend: backend.id, fallback: fallbackUsed, requestedBackend: preferBackend || null };
@@ -325,7 +332,7 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
     before = await readConversation(c, readSelOf(backend));
   } catch (e) {
     await c.close("relay-read-fail");
-    return { ok: false, reason: `读取基线失败: ${e.message}`, runId };
+    return { ok: false, reason: `读取基线失败: ${e.message}`, hint: `无法读取页面消息基线（${e.message}）。请确认页面已加载、登录正常且选择器有效。`, runId };
   }
   rec.beforeCount = (before.msgs || []).length;
   writeRelayRecord(stateDir, rec);
@@ -344,7 +351,7 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
     rec.status = "ABORTED"; rec.reason = `回显失败: ${reasonCode}`; rec.contextLimit = limitHit; rec.network = netDown; rec.limitSignals = limit ? limit.signals : null; rec.updatedAt = new Date().toISOString();
     writeRelayRecord(stateDir, rec);
     await c.close("relay-type-fail");
-    return { ok: false, reason: reasonCode, contextLimit: limitHit, network: netDown, limitSignals: limit ? limit.signals : null, runId, targetUrl: tgt.url };
+    return { ok: false, reason: reasonCode, contextLimit: limitHit, network: netDown, limitSignals: limit ? limit.signals : null, runId, targetUrl: tgt.url, hint: explainReason(reasonCode, { cdpHost }) };
   }
 
   let clicked;
@@ -359,7 +366,7 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
     rec.status = "ABORTED"; rec.reason = `点击未执行: ${reasonCode}`; rec.network = netDown; rec.updatedAt = new Date().toISOString();
     writeRelayRecord(stateDir, rec);
     await c.close("relay-click-fail");
-    return { ok: false, reason: reasonCode, network: netDown, runId, targetUrl: tgt.url };
+    return { ok: false, reason: reasonCode, network: netDown, runId, targetUrl: tgt.url, hint: explainReason(reasonCode, { cdpHost }) };
   }
   // 提交生效校验（仅对声明 verifyClearAfterSend 的后端）：发送成功后输入框应清空；
   // 若仍有残留文本说明点击未真正提交，标 ABORTED 而非 SENT，防止假 SENT/假发送凭证。
@@ -371,7 +378,7 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
       rec.status = "ABORTED"; rec.reason = "点击未真正提交（输入框未清空）"; rec.updatedAt = new Date().toISOString();
       writeRelayRecord(stateDir, rec);
       await c.close("relay-click-noeffect");
-      return { ok: false, reason: "CLICK_NO_EFFECT", runId, targetUrl: tgt.url };
+      return { ok: false, reason: "CLICK_NO_EFFECT", runId, targetUrl: tgt.url, hint: explainReason("CLICK_NO_EFFECT", { cdpHost }) };
     }
   }
   rec.status = "SENT"; rec.sentAt = new Date().toISOString();
@@ -389,7 +396,7 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
     const reason = netDown ? "NETWORK_REPLY_TIMEOUT" : reply.reason;
     rec.status = "UNKNOWN"; rec.reason = reason; rec.network = netDown; rec.afterCount = reply.afterCount; rec.targetUrl = finalUrl; rec.updatedAt = new Date().toISOString();
     writeRelayRecord(stateDir, rec);
-    return { ok: false, reason, network: netDown, runId, targetUrl: finalUrl, convId, replyText: reply.replyText, backend: backend.id, fallback: fallbackUsed };
+    return { ok: false, reason, network: netDown, runId, targetUrl: finalUrl, convId, replyText: reply.replyText, backend: backend.id, fallback: fallbackUsed, hint: explainReason(reason, { cdpHost, replyText: reply.replyText }) };
   }
   rec.status = "REPLY_RECEIVED"; rec.targetUrl = finalUrl; rec.replyId = reply.replyId; rec.replyText = reply.replyText; rec.afterCount = reply.afterCount; rec.updatedAt = new Date().toISOString();
   const file = writeRelayRecord(stateDir, rec);
@@ -398,7 +405,7 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
 
 // ---- CLI ----
 function parseArgs(argv) {
-  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, probe: false, probeUrl: null, backend: null };
+  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, probe: false, probeUrl: null, backend: null, diag: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report-file") out.reportFile = argv[++i];
     else if (argv[i] === "--text") out.text = argv[++i];
@@ -409,6 +416,7 @@ function parseArgs(argv) {
     else if (argv[i] === "--backend") out.backend = argv[++i];
     else if (argv[i] === "--probe") out.probe = true;
     else if (argv[i] === "--probe-url") out.probeUrl = argv[++i];
+    else if (argv[i] === "--diag") out.diag = true;
   }
   return out;
 }
@@ -441,10 +449,35 @@ if (__isMain) {
     console.log("PROBE_URL " + JSON.stringify({ url: opts.probeUrl, ...ready }, null, 2));
     process.exit(0);
   }
+  if (opts.diag) {
+    const d = await diagnose({ cdpHost: config.cdpHost || CDP_DEFAULT, backends: resolveBackends(config), convId: opts.conv || null, backend: opts.backend || null });
+    console.log("DIAG " + JSON.stringify(d, null, 2));
+    process.exit(d.cdp && d.cdp.up ? 0 : 3);
+  }
   if (opts.probe) {
-    const r = await resolveTarget({ config, log: (m) => console.error(m) });
-    console.log("PROBE " + JSON.stringify({ ok: r.ok, reason: r.reason, url: r.url, how: r.how, ready: r.ready }, null, 2));
-    process.exit(r.ok ? 0 : 1);
+    let out;
+    if (opts.conv) {
+      // 按会话探测：与 sendAndRead(preferConvId) 走同一条路径，避免"探的是另一个标签页"导致误报
+      const list = await (await fetch((config.cdpHost || CDP_DEFAULT) + "/json/list")).json();
+      const page = list.find((t) => t.type === "page" && String(t.url || "").includes(opts.conv));
+      if (!page) {
+        out = { ok: false, reason: "CONV_PAGE_NOT_FOUND", hint: explainReason("CONV_PAGE_NOT_FOUND", { cdpHost: config.cdpHost || CDP_DEFAULT }) };
+      } else {
+        const backend = selectBackend(page.url, resolveBackends(config)) || CG;
+        const ready = await probePage(page, backend);
+        out = { ok: ready.ready, url: page.url, backend: backend.id, ready, note: "此路径与 sendAndRead(preferConvId) 一致；ready=false 仅表示就绪信号缺失，不代表不能发送" };
+      }
+    } else {
+      const r = await resolveTarget({ config, log: (m) => console.error(m), preferBackend: opts.backend || null });
+      out = { ok: r.ok, reason: r.reason, url: r.url, how: r.how, ready: r.ready, hint: r.hint || (r.ok ? undefined : explainReason(r.reason, { cdpHost: config.cdpHost || CDP_DEFAULT })) };
+    }
+    console.log("PROBE " + JSON.stringify(out, null, 2));
+    if (!out.ok) {
+      const d = await diagnose({ cdpHost: config.cdpHost || CDP_DEFAULT, backends: resolveBackends(config), convId: opts.conv || null, backend: opts.backend || null });
+      console.error("PROBE_HINTS " + JSON.stringify(d.hints, null, 2));
+      if (out.hint) console.error("PROBE_EXPLAIN " + out.hint);
+    }
+    process.exit(out.ok ? 0 : 1);
   }
 
   const text = opts.text != null ? opts.text : (opts.reportFile ? fs.readFileSync(opts.reportFile, "utf8") : null);

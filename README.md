@@ -93,7 +93,7 @@ node test/relay.mjs --report-file <file> --backend deepseek
 ## 要求
 
 - Node.js ≥ 18
-- 中继功能需要本机 Chrome + 已登录的目标网页对话；MCP / 本地服务 / 纯逻辑测试**不需要**浏览器。
+- 中继功能需要本机 Chromium 浏览器（Chrome / Edge）+ 已登录的目标网页对话；可用 `npm run browser` 一键启动调试浏览器。MCP / 本地服务 / 纯逻辑测试**不需要**浏览器。
 
 ## 快速开始
 
@@ -104,15 +104,24 @@ node test/local_service.mjs --port 8787
 # 2) 把 mcp_server 注册到你的 MCP 宿主（示例 args，路径按你的仓库调整）
 #    node test/mcp_server.mjs --projects test/projects.json --token-file test/service/token.txt
 
-# 3) 运行测试
+# 3) 运行测试 / 自检
 npm test
+npm run selftest        # MCP 闭环干跑自检（list→claim→submit→resources，不需要浏览器）
+
+# 4) 需要网页中继时：一键启动调试浏览器（自动探测 Chrome/Edge，开 9222）
+npm run browser         # 打开 DeepSeek；npm run browser -- --backend chatgpt 打开 ChatGPT
+npm run diag            # 诊断 CDP / 标签页 / 登录就绪状态（不发送）
 ```
 
 ## 开发与测试
 
 - `npm test`：纯逻辑 + stdio 集成测试（不依赖浏览器）。
+- `npm run selftest`：MCP 闭环干跑自检（不需要浏览器/会话，验证 claim→submit→resources 是否健康）。
+- `npm run browser`：一键启动带 `--remote-debugging-port` 的 Chromium（Chrome/Edge），并打开目标网页。
+- `npm run diag`：只诊断不发送（CDP 是否可达、有无聊天页、登录/输入框是否就绪），失败时给出可执行建议。
 - `npm run test:manual:browser`：需要已登录浏览器 + 配置 `DS_CONV` 的 DeepSeek 真实往返测试（**不会**自动运行，避免误发到私人会话）。
 - 测试套件各自独立，临时文件落在系统 `os.tmpdir()`，互不污染。
+- 常见问题（发送失败诊断、Windows 编码、Python 引号等）见 [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)。
 
 ## 命名与兼容性
 

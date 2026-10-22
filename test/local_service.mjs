@@ -409,11 +409,19 @@ export function createTaskService({
       name: p.name,
       hasRegistry: fs.existsSync(p.config.registryFile),
     }));
-    const errCount = Object.keys(projectErrors || {}).length;
+    // 配置错误可诊断（反馈：只有 configErrorCount 无法定位）——给出项目名与脱敏原因，
+    // 绝对路径统一替换为 <path>，保持信息面白名单（不回显本机路径）。
+    const redact = (s) => String(s)
+      .replace(/[A-Za-z]:[\\/][^\s;，,）)]*/g, "<path>")
+      .replace(/(^|[\s(（])\/[^\s;，,）)]*/g, "$1<path>");
+    const configErrors = Object.entries(projectErrors || {})
+      .map(([project, message]) => ({ project, message: redact(message) }));
+    const errCount = configErrors.length;
     return {
       ok: true, httpStatus: 200,
       version: SERVICE_VERSION,
       projects: items,
+      configErrors,
       configErrorCount: errCount,
       queueDepth: queue.length,
       running: Boolean(running),

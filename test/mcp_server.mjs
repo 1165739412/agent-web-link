@@ -59,6 +59,15 @@ export const TOOLS = [
             additionalProperties: false,
           },
         },
+        configErrors: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["project", "message"],
+            properties: { project: { type: "string" }, message: { type: "string" } },
+            additionalProperties: false,
+          },
+        },
         configErrorCount: { type: "number" },
         queueDepth: { type: "number" },
         running: { type: "boolean" },
@@ -276,10 +285,11 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
         if (!t.hasReport) continue;
         total++;
         if (out.length < 100) {
+          const sum = t.summary ? `：${String(t.summary).replace(/\s+/g, " ").slice(0, 80)}` : "";
           out.push({
             uri: `agent-link://report/${encodeURIComponent(p.name)}/${encodeURIComponent(t.taskId)}`,
             name: `${p.name}/${t.taskId}`,
-            description: `任务报告（phase=${t.phase}）`,
+            description: `任务报告（phase=${t.phase}）${sum}`,
             mimeType: "application/json",
           });
         }

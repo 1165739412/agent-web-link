@@ -67,7 +67,7 @@ record("S1 initialize：serverInfo/capabilities/instructions", () => {
   assertInit(init.result);
 });
 function assertInit(res) {
-  if (!res || res.serverInfo?.name !== "agent-link") throw new Error("serverInfo 异常");
+  if (!res || res.serverInfo?.name !== "agent-web-link") throw new Error("serverInfo 异常");
   if (!res.capabilities?.tools) throw new Error("缺 tools capability");
   if (!res.capabilities?.resources) throw new Error("缺 resources capability");
   if (typeof res.instructions !== "string") throw new Error("缺 instructions");

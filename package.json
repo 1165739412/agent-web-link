@@ -7,6 +7,9 @@
   "private": false,
   "scripts": {
     "test": "node test/run_tests.mjs",
+    "selftest": "node test/selftest.mjs",
+    "browser": "node test/start-browser.mjs",
+    "diag": "node test/send_to_ds.mjs --diag",
     "test:manual:browser": "node test/deepseek_adapter_test.mjs"
   },
   "engines": {

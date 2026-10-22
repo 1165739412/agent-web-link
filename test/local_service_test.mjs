@@ -412,6 +412,25 @@ await record("LS-BIG 报告 >1MB → 413 REPORT_TOO_LARGE", async () => {
   assert.equal(r.code, "REPORT_TOO_LARGE");
 });
 
+// LS-CFG 配置错误可诊断且脱敏（反馈：configErrorCount 无详情）
+await record("LS-CFG listProjects 返回脱敏的 configErrors（不回显绝对路径）", async () => {
+  const good = makeProject("lscfg", "proj-a");
+  const badCfgPath = path.join(BASE, "lscfg", "missing", "nope.config.json");
+  const file = path.join(BASE, "lscfg", "projects.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, projects: [
+    { name: "proj-a", config: good.cfgPath },
+    { name: "bad-proj", config: badCfgPath },
+  ] }, null, 2), "utf8");
+  const svc = createTaskService({ projectsFile: file, tokenFile: path.join(BASE, "lscfg", "token.txt"), worker: async () => ({ ok: true, results: [] }), log: () => {} });
+  const lp = svc.listProjects();
+  assert.equal(lp.configErrorCount, 1);
+  assert.equal(lp.configErrors.length, 1);
+  assert.equal(lp.configErrors[0].project, "bad-proj");
+  assert.ok(lp.configErrors[0].message.length > 0, "应给出可读原因");
+  assert.ok(!/[A-Za-z]:[\\/]/.test(lp.configErrors[0].message), "不得回显盘符绝对路径");
+});
+
 fs.rmSync(BASE, { recursive: true, force: true });
 console.log(results.join("\n"));
 const failed = results.filter((r) => r.startsWith("FAIL"));

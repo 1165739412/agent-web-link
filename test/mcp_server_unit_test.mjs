@@ -18,7 +18,7 @@ const service = {
   claimNext: ({ project, claimedBy }) => { calls.push(["claim", project, claimedBy]); return { ok: true, task: { taskId: "t1", project: project || "p1" } }; },
   status: ({ project, taskId }) => ({ ok: true, taskId, phase: "RUNNING", project }),
   submitResult: ({ ok, evidence }) => ({ ok: !!ok, phase: ok ? "REPORTED" : "FAILED" }),
-  listProjects: () => ({ ok: true, version: "test-1", projects: [{ name: "p1", hasRegistry: true }], configErrorCount: 0, queueDepth: 0, running: true }),
+  listProjects: () => ({ ok: true, version: "test-1", projects: [{ name: "p1", hasRegistry: true }], configErrors: [{ project: "bad", message: "<path> 配置非法" }], configErrorCount: 1, queueDepth: 0, running: true }),
   listTasks: ({ project, phase, limit }) => {
     const all = [{ taskId: "t1", phase: "NEW", hasReport: false }, { taskId: "t2", phase: "REPORTED", hasReport: true }];
     const filtered = all.filter((t) => !phase || t.phase === phase).slice(0, limit || 20);
@@ -47,7 +47,7 @@ record("V3 initialize 含 instructions 与 capabilities.tools.listChanged=false"
   const r = call(service, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, st);
   assert.equal(r.result.capabilities.tools.listChanged, false);
   assert.match(r.result.instructions, /agent_link_claim_next_task/);
-  assert.equal(r.result.serverInfo.name, "agent-link");
+  assert.equal(r.result.serverInfo.name, "agent-web-link");
 });
 record("V4 SUPPORTED 版本表降序且包含 2024-11-05", () => {
   assert.ok(SUPPORTED_PROTOCOL_VERSIONS.includes("2024-11-05"));
@@ -166,8 +166,11 @@ record("V20 重复 initialize → -32600", () => {
 record("V21 list_projects 信息面白名单：结构白名单断言（DS 评审：键集合精确匹配）", () => {
   const r = call(service, { jsonrpc: "2.0", id: 25, method: "tools/call", params: { name: "agent_link_list_projects", arguments: {} } });
   const parsed = JSON.parse(r.result.content[0].text);
-  assert.deepEqual(Object.keys(parsed).sort(), ["configErrorCount", "ok", "projects", "queueDepth", "running", "version"]);
+  assert.deepEqual(Object.keys(parsed).sort(), ["configErrorCount", "configErrors", "ok", "projects", "queueDepth", "running", "version"]);
   assert.deepEqual(Object.keys(parsed.projects[0]).sort(), ["hasRegistry", "name"]);
+  // 配置错误可诊断（反馈：只有 configErrorCount 无法定位）
+  assert.equal(parsed.configErrors.length, 1);
+  assert.equal(parsed.configErrors[0].project, "bad");
   // 辅助黑名单（不作为主要手段）：不出现登记簿/错误原文键名
   const text = r.result.content[0].text;
   assert.equal(text.includes("registryFile") || text.includes("projectErrors"), false);
