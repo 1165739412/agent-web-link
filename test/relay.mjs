@@ -30,7 +30,13 @@ const RELAY_USAGE = `用法: node test/relay.mjs [--report-file <f> | --text <s>
   --backend <id>        首选后端（chatgpt/deepseek），优先于 config.preferBackend
   --probe               就绪探测（不带 --conv 走就绪门；带 --conv 与发送同路径）
   --diag / --health     仅诊断 CDP/标签页/登录就绪，不发送
-  --recover             只读恢复：读回已有会话最后一条回复并解除发送护栏（不发送）
+  --repair-wal          隔离损坏 WAL（含 latest）；默认写 UNKNOWN 占位仍阻断，--force 才直接放行
+  --force               配合 --repair-wal：显式承担"损坏记录可能已发送"的风险
+  --recover             只读恢复（不发送）；需唯一待确认记录 + --expect 指纹
+  --run-id <id>         recover 时指定待确认记录（多候选时必须）
+  --task-id <id>        recover 时按 reportRef 过滤
+  --expect <s>          recover 指纹（回复必须包含，通常是 task_id/nonce）
+  --allow-unverified    recover 时显式跳过指纹校验（不推荐）
   --probe-url <url>     导航到指定 URL 后探测
   -h, --help            显示本帮助
 
@@ -188,30 +194,149 @@ export async function resolveTarget({ config, log = () => {}, preferBackend = nu
 // 传输状态护栏：上一次若停在 SENDING/SENT/UNKNOWN（可能已发送但未确认），拒绝自动重发。
 // 崩溃一致性（DS 评审 BLOCKER B1）：SENT/UNKNOWN 也属于"可能已提交"，必须先 --recover 读回确认。
 export const PENDING_SEND_STATES = ["SENDING", "SENT", "UNKNOWN"];
-export function checkRelayGuard(stateDir) {
-  const p = path.join(stateDir, "relay_latest.json");
-  if (!fs.existsSync(p)) return { ok: true };
+
+// 从 URL 精确提取规范化会话标识（ChatGPT /c/<id> 或 DeepSeek /s/<id>）；禁止 substring 比较
+function extractConvId(url) {
+  const u = String(url || "");
+  const m = u.match(/\/c\/([0-9a-fA-F-]{8,})/) || u.match(/\/s\/([0-9a-fA-F-]{8,})/);
+  return m ? m[1].toLowerCase() : null;
+}
+
+// 隔离损坏 WAL（移动到 quarantine/ 并审计）。
+// 默认写 UNKNOWN 占位，护栏仍阻断（避免"隔离即静默放行"）；--force 才写 ABORTED（显式承担风险）。
+export function quarantineCorrupt(stateDir, file, { force = false } = {}) {
   try {
-    const prev = JSON.parse(fs.readFileSync(p, "utf8"));
-    if (prev && PENDING_SEND_STATES.includes(prev.status)) {
+    const dir = path.join(stateDir, "quarantine");
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, `${path.basename(file)}.${Date.now().toString(36)}`);
+    fs.renameSync(file, dest);
+    const runId = `r-quarantine-${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
+    const placeholder = path.join(stateDir, `relay_quarantine_${Date.now().toString(36)}_${randomBytes(2).toString("hex")}.json`);
+    const rec = {
+      recordType: "relay", schemaVersion: 1, runId,
+      status: force ? "ABORTED" : "UNKNOWN", phase: "quarantined",
+      targetUrl: "", quarantinedFrom: path.basename(file), riskAccepted: force,
+      at: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    writeFileAtomic(placeholder, JSON.stringify(rec, null, 2));
+    try {
+      fs.appendFileSync(path.join(stateDir, "audit.log"), JSON.stringify({ at: new Date().toISOString(), action: "quarantine-corrupt", file: path.basename(file), dest: path.basename(dest), placeholder: path.basename(placeholder), riskAccepted: force }) + "\n", "utf8");
+    } catch {}
+    return { dest, placeholder };
+  } catch { return null; }
+}
+
+// 显式修复：隔离所有损坏的 WAL（含 relay_latest.json），下次发送会重建 latest。
+// 默认 blocked=true（UNKNOWN 占位仍阻断）；force=true 才直接放行。
+export function repairWal(stateDir, { force = false } = {}) {
+  const out = [];
+  const handle = (file) => {
+    const r = quarantineCorrupt(stateDir, file, { force });
+    if (r) out.push({ file: path.basename(file), dest: r.dest, placeholder: r.placeholder });
+  };
+  const latest = path.join(stateDir, "relay_latest.json");
+  if (fs.existsSync(latest)) {
+    try { JSON.parse(fs.readFileSync(latest, "utf8")); }
+    catch { handle(latest); }
+  }
+  let files = [];
+  try { files = fs.readdirSync(stateDir).filter((f) => /^relay_.+\.json$/.test(f) && f !== "relay_latest.json"); } catch {}
+  for (const f of files) {
+    const fp = path.join(stateDir, f);
+    try { JSON.parse(fs.readFileSync(fp, "utf8")); }
+    catch { handle(fp); }
+  }
+  return { ok: true, quarantined: out, blocked: !force && out.length > 0 };
+}
+
+// 人工确认后消除隔离占位（recover 成功时自动调用）
+export function resolveQuarantine(stateDir, { status = "RECOVERED", by = null } = {}) {
+  let n = 0;
+  try {
+    for (const f of fs.readdirSync(stateDir).filter((x) => /^relay_quarantine_.+\.json$/.test(x))) {
+      const fp = path.join(stateDir, f);
+      try {
+        const rec = JSON.parse(fs.readFileSync(fp, "utf8"));
+        if (rec.status === "UNKNOWN") {
+          rec.status = status;
+          rec.resolvedBy = by;
+          rec.resolvedAt = new Date().toISOString();
+          writeFileAtomic(fp, JSON.stringify(rec, null, 2));
+          n++;
+        }
+      } catch {}
+    }
+  } catch {}
+  return { ok: true, resolved: n };
+}
+export function checkRelayGuard(stateDir, { convId = null, targetId = null } = {}) {
+  // fail-safe：目标会话未知（无 convId）或记录目标不可解析 → 视为可能同会话，保守阻断；
+  // 仅当双方会话标识都确定且不相等时才放行。
+  const targetConv = convId ? (extractConvId(convId) || String(convId).toLowerCase()) : null;
+  const targetTab = targetId || null;
+  const matches = (rec) => {
+    const recTab = rec && rec.targetId ? rec.targetId : null;
+    const recConv = extractConvId(rec && rec.targetUrl);
+    if (targetTab && recTab) return recTab === targetTab; // 同 tab 阻断，不同 tab 放行
+    if (targetTab && !recTab) {
+      // 目标是新 tab/新会话：旧记录若有已知会话 → 视为不同；会话未知 → 保守阻断
+      if (!targetConv) return !recConv ? true : false;
+      if (!recConv) return true;
+      return recConv === targetConv;
+    }
+    if (!targetConv) return true;
+    if (!recConv) return true;
+    return recConv === targetConv;
+  };
+  const p = path.join(stateDir, "relay_latest.json");
+  let prev = null;
+  if (fs.existsSync(p)) {
+    try { prev = JSON.parse(fs.readFileSync(p, "utf8")); }
+    catch (e) {
+      // 正常发送流程遇损坏 WAL：阻断（只有 recover 才允许跳过损坏）
+      return { ok: false, code: "WAL_CORRUPT_BLOCK", reason: `WAL_CORRUPT_BLOCK: relay_latest.json 损坏（${e.message}），禁止自动发送；请运行 node test/relay.mjs --repair-wal 隔离损坏文件` };
+    }
+  }
+  // 扫描 WAL 记录：损坏 / typing / SENT / UNKNOWN 一律阻断；lock-acquired 放行
+  try {
+    const files = fs.readdirSync(stateDir).filter((f) => /^relay_.+\.json$/.test(f) && f !== "relay_latest.json");
+    for (const f of files) {
+      let rec = null;
+      try { rec = JSON.parse(fs.readFileSync(path.join(stateDir, f), "utf8")); }
+      catch (e) {
+        return { ok: false, code: "WAL_CORRUPT_BLOCK", reason: `WAL_CORRUPT_BLOCK: WAL 记录 ${f} 损坏（${e.message}），禁止自动发送；请运行 node test/relay.mjs --repair-wal 隔离损坏文件` };
+      }
+      if (!rec || !PENDING_SEND_STATES.includes(rec.status)) continue;
+      if (!matches(rec)) continue;
+      if (rec.status === "SENDING" && rec.phase === "lock-acquired") continue;
       return {
-        ok: false,
-        status: prev.status,
-        runId: prev.runId || null,
-        reason: `上一次中转状态为 ${prev.status}（${prev.runId || ""}），可能已发送但未确认；禁止自动重发。请先运行 --recover --conv <会话ID> 读回确认，或人工处理`,
+        ok: false, status: rec.status, runId: rec.runId || null,
+        reason: `上一次中转状态为 ${rec.status}${rec.phase ? "/" + rec.phase : ""}（${rec.runId || f}），可能已发送但未确认；禁止自动重发。请先 --recover --run-id ${rec.runId || "<runId>"} --expect <指纹> 读回确认`,
       };
     }
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, reason: `relay 指针损坏: ${e.message}，需人工复核` };
+  } catch {}
+  if (prev && PENDING_SEND_STATES.includes(prev.status) && matches(prev)) {
+    if (prev.status === "SENDING" && prev.phase === "lock-acquired") return { ok: true };
+    return {
+      ok: false, status: prev.status, runId: prev.runId || null,
+      reason: `上一次中转状态为 ${prev.status}（${prev.runId || ""}），可能已发送但未确认；禁止自动重发。请先 --recover --run-id ${prev.runId || "<runId>"} --expect <指纹> 读回确认`,
+    };
   }
+  return { ok: true };
+}
+
+// WAL 原子写（temp + rename），避免半写文件出现在最终路径（DS HIGH-3r 前提）
+function writeFileAtomic(file, text) {
+  const tmp = `${file}.tmp-${process.pid}-${randomBytes(2).toString("hex")}`;
+  fs.writeFileSync(tmp, text, "utf8");
+  fs.renameSync(tmp, file);
 }
 
 function writeRelayRecord(stateDir, rec) {
   try { fs.mkdirSync(stateDir, { recursive: true }); } catch {}
   const file = path.join(stateDir, `relay_${rec.runId}.json`);
-  fs.writeFileSync(file, JSON.stringify(rec, null, 2), "utf8");
-  fs.writeFileSync(path.join(stateDir, "relay_latest.json"), JSON.stringify({ runId: rec.runId, status: rec.status, targetUrl: rec.targetUrl, updatedAt: rec.updatedAt }, null, 2), "utf8");
+  writeFileAtomic(file, JSON.stringify(rec, null, 2));
+  writeFileAtomic(path.join(stateDir, "relay_latest.json"), JSON.stringify({ runId: rec.runId, status: rec.status, phase: rec.phase || null, targetUrl: rec.targetUrl, updatedAt: rec.updatedAt }, null, 2));
   return file;
 }
 
@@ -271,13 +396,111 @@ export async function createNewConversation({ config, log = () => {}, attempts =
   return { ok: false, reason: "NEW_CONV_NOT_READY", targetId: lastTargetId, attempts };
 }
 
-// 发送 + 独立读回：返回 {ok, targetUrl, convId, replyText, replyId, ...}；失败安全返回不重发
-// 支持 preferConvId（定向到指定对话）与 overridePage（刚新建、尚无 /c/id 的页面）
-export async function sendAndRead({ config, text, stateDir, log = () => {}, preferConvId = null, overridePage = null, reportRef = null, preferBackend = null }) {
+// ---- HIGH-3：单 relay 进程锁（O_EXCL 锁文件），保证"检查—写入"与 CDP 操作串行 ----
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
+}
+
+export function acquireRelayLock(stateDir) {
+  const lockPath = path.join(stateDir, "relay.lock");
+  const token = `${process.pid}-${Date.now()}-${randomBytes(3).toString("hex")}`;
+  // 陈旧阈值仅用于"无法判定 pid"的兜底；有 pid 时以存活性为准（DS HIGH-3r）
+  const staleMs = Math.max(30000, Number(process.env.AGENT_LINK_LOCK_STALE_MS || 600000));
+  // pid 存活但锁极旧（如 pid 被 OS 复用）时强制回收，避免永久死锁；阈值远大于单次发送耗时
+  const hardMs = Math.max(10 * 60 * 1000, Number(process.env.AGENT_LINK_LOCK_HARD_STALE_MS || 2 * 60 * 60 * 1000));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.mkdirSync(stateDir, { recursive: true });
+      // 一次 writeFile 携带 pid/token，缩小"文件已建、内容未写"窗口
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token, at: Date.now() }), { flag: "wx", encoding: "utf8" });
+      return { ok: true, path: lockPath, token };
+    } catch (e) {
+      if (e.code !== "EEXIST") return { ok: false, reason: "RELAY_LOCK_ERROR", error: e.message };
+      let owner = null;
+      try { owner = JSON.parse(fs.readFileSync(lockPath, "utf8")); } catch {}
+      if (owner && Number.isInteger(owner.pid)) {
+        if (isPidAlive(owner.pid)) {
+          let mtime = 0;
+          try { mtime = fs.statSync(lockPath).mtimeMs; } catch {}
+          if (mtime && Date.now() - mtime > hardMs) {
+            try { fs.rmSync(lockPath, { force: true }); } catch {}
+            try { fs.appendFileSync(path.join(stateDir, "audit.log"), JSON.stringify({ at: new Date().toISOString(), action: "lock-force-reclaimed", owner }) + "\n", "utf8"); } catch {}
+            continue;
+          }
+          return { ok: false, reason: "RELAY_BUSY", owner, hint: `进程 ${owner.pid} 持有锁` };
+        }
+        try { fs.rmSync(lockPath, { force: true }); } catch {}
+        continue;
+      }
+      // 无 pid（锁文件损坏）→ mtime 兜底
+      let stale = false;
+      try { const st = fs.statSync(lockPath); stale = Date.now() - st.mtimeMs > staleMs; } catch {}
+      if (stale) { try { fs.rmSync(lockPath, { force: true }); } catch {} continue; }
+      return { ok: false, reason: "RELAY_BUSY", owner };
+    }
+  }
+  return { ok: false, reason: "RELAY_BUSY" };
+}
+
+export function verifyRelayLock(lock) {
+  if (!lock || !lock.ok) return false;
+  try {
+    const cur = JSON.parse(fs.readFileSync(lock.path, "utf8"));
+    return !!cur && cur.token === lock.token && cur.pid === process.pid;
+  } catch { return false; }
+}
+
+export function releaseRelayLock(lock) {
+  if (!lock || !lock.ok) return;
+  try {
+    const cur = JSON.parse(fs.readFileSync(lock.path, "utf8"));
+    if (cur && cur.token === lock.token) fs.rmSync(lock.path, { force: true });
+  } catch {}
+}
+
+// 发送 + 独立读回：先取单进程锁，再执行；失败安全返回不重发
+export async function sendAndRead(opts = {}) {
+  const stateDir = opts.stateDir || path.join(__dirname, "state");
+  const lock = acquireRelayLock(stateDir);
+  if (!lock.ok) {
+    return {
+      ok: false,
+      reason: lock.reason,
+      hint: lock.reason === "RELAY_BUSY" ? "另一个 relay 发送正在进行（relay.lock）；请等待或检查冲突进程" : `获取发送锁失败: ${lock.error || ""}`,
+      runId: `r-lock-${Date.now().toString(36)}`,
+    };
+  }
+  // 拿到锁后立刻校验（防陈旧回收后原进程恢复继续发送）
+  if (!verifyRelayLock(lock)) {
+    releaseRelayLock(lock);
+    return { ok: false, reason: "RELAY_LOCK_LOST", hint: "锁已被回收，放弃本次发送", runId: `r-lock-${Date.now().toString(36)}` };
+  }
   const runId = `r-relay-${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
+  try {
+    // 任何 CDP 动作之前先落 WAL（SENDING），压缩"锁已取、WAL 未写"窗口
+    writeRelayRecord(stateDir, {
+      recordType: "relay", schemaVersion: 1, runId, targetUrl: "", status: "SENDING",
+      phase: "lock-acquired", startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    });
+    return await _sendAndRead({ ...opts, stateDir, runId, _lock: lock });
+  } finally { releaseRelayLock(lock); }
+}
+
+// 支持 preferConvId（定向到指定对话）与 overridePage（刚新建、尚无 /c/id 的页面）
+async function _sendAndRead({ config, text, stateDir, log = () => {}, preferConvId = null, overridePage = null, reportRef = null, preferBackend = null, runId: preRunId = null, _lock = null }) {
+  const runId = preRunId || `r-relay-${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
   const cdpHost = config.cdpHost || CDP_DEFAULT;
-  const guard = checkRelayGuard(stateDir);
-  if (!guard.ok) { log(`[RELAY] 护栏阻断: ${guard.reason}`); return { ok: false, reason: guard.reason, hint: guard.reason, runId }; }
+
+  // M6：发送限流（同一 stateDir 下最小间隔），降低触发网页风控的概率
+  const minInterval = Math.max(0, Number(process.env.AGENT_LINK_MIN_SEND_INTERVAL_MS || 1500));
+  if (minInterval > 0) {
+    const f = path.join(stateDir, "relay_last_send.json");
+    let last = 0;
+    try { last = Number(JSON.parse(fs.readFileSync(f, "utf8")).at || 0); } catch {}
+    const wait = last + minInterval - Date.now();
+    if (wait > 0) { log(`[RELAY] 限流等待 ${wait}ms（最小发送间隔 ${minInterval}ms）`); await new Promise((r) => setTimeout(r, wait)); }
+  }
 
   let tgt;
   let convMissing = false;
@@ -304,6 +527,16 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
   let backend = selectBackend(tgt.url, backends) || CG;
   // DS 决策②：页面级回退（preferBackend 命中了其他后端）也要在凭证中标注
   let fallbackUsed = !!(preferBackend && backend.id !== preferBackend);
+
+  // 护栏放在目标解析之后（HIGH-B'）：此时 targetId / convId 已定型，避免新会话首发被 fail-safe 误挡
+  const targetConv = preferConvId || convIdOf(tgt.url, backend);
+  const targetTab = (tgt.page && (tgt.page.id || tgt.page.targetId)) || null;
+  const guard = checkRelayGuard(stateDir, { convId: targetConv, targetId: targetTab });
+  if (!guard.ok) {
+    log(`[RELAY] 护栏阻断: ${guard.reason}`);
+    writeRelayRecord(stateDir, { recordType: "relay", schemaVersion: 1, runId, targetUrl: tgt.url, targetId: targetTab, status: "ABORTED", reason: guard.reason, updatedAt: new Date().toISOString() });
+    return { ok: false, reason: guard.reason, hint: guard.reason, runId, targetUrl: tgt.url };
+  }
 
   let c = await WSClient.connect(tgt.page.webSocketDebuggerUrl);
   // 网络预检：离线/错误页时直接安全返回，不输入、不点击。
@@ -348,7 +581,7 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
     return { ok: false, reason: "NETWORK_UNAVAILABLE", network: netPre, runId, targetUrl: tgt.url, backend: backend.id, fallback: fallbackUsed, hint: explainReason("NETWORK_UNAVAILABLE", { cdpHost }) };
   }
   const textHash = createHash("sha256").update(text || "", "utf8").digest("hex").slice(0, 16);
-  const rec = { recordType: "relay", schemaVersion: 1, runId, targetUrl: tgt.url, how: tgt.how, status: "SENDING", startedAt: new Date().toISOString(), textLen: (text || "").length, textHash, reportRef, backend: backend.id, fallback: fallbackUsed, requestedBackend: preferBackend || null };
+  const rec = { recordType: "relay", schemaVersion: 1, runId, targetUrl: tgt.url, targetId: targetTab, how: tgt.how, status: "SENDING", startedAt: new Date().toISOString(), textLen: (text || "").length, textHash, reportRef, backend: backend.id, fallback: fallbackUsed, requestedBackend: preferBackend || null };
   let before;
   try {
     before = await readConversation(c, readSelOf(backend));
@@ -357,8 +590,18 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
     return { ok: false, reason: `读取基线失败: ${e.message}`, hint: `无法读取页面消息基线（${e.message}）。请确认页面已加载、登录正常且选择器有效。`, runId };
   }
   rec.beforeCount = (before.msgs || []).length;
+  rec.phase = "typing";
   writeRelayRecord(stateDir, rec);
 
+  // 记录本次发送时间（限流基准）
+  try { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(path.join(stateDir, "relay_last_send.json"), JSON.stringify({ at: Date.now() }), "utf8"); } catch {}
+  // 发送临界区前再次校验锁（防原进程恢复后二次发送）
+  if (_lock && !verifyRelayLock(_lock)) {
+    await c.close("relay-lock-lost");
+    rec.status = "ABORTED"; rec.reason = "RELAY_LOCK_LOST"; rec.updatedAt = new Date().toISOString();
+    writeRelayRecord(stateDir, rec);
+    return { ok: false, reason: "RELAY_LOCK_LOST", hint: "发送前锁校验失败（锁已被回收），放弃发送", runId, targetUrl: tgt.url };
+  }
   let typed;
   try { typed = await _typeIntoComposer(c, text, backend); }
   catch (e) { typed = { ok: false, err: "type exception: " + e.message }; } // 提交可能触发页面上下文重建，异常需安全化
@@ -376,6 +619,13 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
     return { ok: false, reason: reasonCode, contextLimit: limitHit, network: netDown, limitSignals: limit ? limit.signals : null, runId, targetUrl: tgt.url, hint: explainReason(reasonCode, { cdpHost }) };
   }
 
+  // 点击前最后校验（输入与点击之间也可能被回收）
+  if (_lock && !verifyRelayLock(_lock)) {
+    await c.close("relay-lock-lost");
+    rec.status = "ABORTED"; rec.reason = "RELAY_LOCK_LOST"; rec.updatedAt = new Date().toISOString();
+    writeRelayRecord(stateDir, rec);
+    return { ok: false, reason: "RELAY_LOCK_LOST", hint: "点击前锁校验失败（锁已被回收），放弃发送", runId, targetUrl: tgt.url };
+  }
   let clicked;
   try { clicked = await _clickSendOnce(c, backend); }
   catch (e) { clicked = { ok: false, err: "click exception: " + e.message }; } // 提交可能触发上下文重建（Promise collected）
@@ -413,23 +663,63 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
   await c.close("relay-done");
   const finalUrl = href || tgt.url;
   const convId = convIdOf(finalUrl, backend) || convIdOf(tgt.url, backend);
+  // M5：回复落盘上限，避免超大回复耗尽磁盘/内存（截断标记随结果返回）
+  const MAX_REPLY_CHARS = Math.max(1000, Number(process.env.AGENT_LINK_MAX_REPLY_CHARS || 1000000));
+  let replyText = reply.replyText || "";
+  let replyTruncated = false;
+  if (replyText.length > MAX_REPLY_CHARS) { replyText = replyText.slice(0, MAX_REPLY_CHARS); replyTruncated = true; }
   if (!reply.ok) {
     const netDown = !!(netReply && netReply.unavailable);
     const reason = netDown ? "NETWORK_REPLY_TIMEOUT" : reply.reason;
-    rec.status = "UNKNOWN"; rec.reason = reason; rec.network = netDown; rec.afterCount = reply.afterCount; rec.targetUrl = finalUrl; rec.updatedAt = new Date().toISOString();
+    rec.status = "UNKNOWN"; rec.reason = reason; rec.network = netDown; rec.afterCount = reply.afterCount; rec.targetUrl = finalUrl; rec.replyText = replyText; rec.replyTruncated = replyTruncated; rec.updatedAt = new Date().toISOString();
     writeRelayRecord(stateDir, rec);
-    return { ok: false, reason, network: netDown, runId, targetUrl: finalUrl, convId, replyText: reply.replyText, backend: backend.id, fallback: fallbackUsed, hint: explainReason(reason, { cdpHost, replyText: reply.replyText }) };
+    return { ok: false, reason, network: netDown, runId, targetUrl: finalUrl, convId, replyText, replyTruncated, backend: backend.id, fallback: fallbackUsed, hint: explainReason(reason, { cdpHost, replyText }) };
   }
-  rec.status = "REPLY_RECEIVED"; rec.targetUrl = finalUrl; rec.replyId = reply.replyId; rec.replyText = reply.replyText; rec.afterCount = reply.afterCount; rec.updatedAt = new Date().toISOString();
+  rec.status = "REPLY_RECEIVED"; rec.targetUrl = finalUrl; rec.replyId = reply.replyId; rec.replyText = replyText; rec.replyTruncated = replyTruncated; rec.afterCount = reply.afterCount; rec.updatedAt = new Date().toISOString();
   const file = writeRelayRecord(stateDir, rec);
-  return { ok: true, runId, targetUrl: finalUrl, convId, how: tgt.how, replyText: reply.replyText, replyId: reply.replyId, beforeCount: rec.beforeCount, afterCount: reply.afterCount, recordFile: file, backend: backend.id, fallback: fallbackUsed };
+  return { ok: true, runId, targetUrl: finalUrl, convId, how: tgt.how, replyText, replyTruncated, replyId: reply.replyId, beforeCount: rec.beforeCount, afterCount: reply.afterCount, recordFile: file, backend: backend.id, fallback: fallbackUsed };
 }
 
-// 只读恢复（DS 评审 HIGH H3）：attach 已有会话，读回最后一条助手回复，不发送。
-// 成功后写一条 RECOVERED 记录并更新 relay_latest，解除护栏（人工确认语义）。
-export async function recover({ config, stateDir, convId = null, log = () => {} }) {
+// 只读恢复（DS HIGH-1）：attach 已有会话，读回最后一条助手回复，不发送。
+// 必须唯一命中待确认记录，并用 --expect 指纹校验；零候选/多候选/不匹配一律拒绝，避免静默张冠李戴。
+export async function recover({ config, stateDir, convId = null, taskId = null, runId = null, expect = null, allowUnverified = false, log = () => {} }) {
   const cdp = config.cdpHost || CDP_DEFAULT;
   const backends = resolveBackends(config);
+  // 损坏的 latest 先隔离（recover 末尾会重建）
+  const latestPath = path.join(stateDir, "relay_latest.json");
+  if (fs.existsSync(latestPath)) {
+    try { JSON.parse(fs.readFileSync(latestPath, "utf8")); }
+    catch { quarantineCorrupt(stateDir, latestPath); }
+  }
+  // 1) 找待确认记录（SENDING/SENT/UNKNOWN）
+  let candidates = [];
+  try {
+    const files = fs.readdirSync(stateDir).filter((f) => /^relay_.+\.json$/.test(f) && f !== "relay_latest.json");
+    for (const f of files) {
+      try {
+        const rec = JSON.parse(fs.readFileSync(path.join(stateDir, f), "utf8"));
+        if (!PENDING_SEND_STATES.includes(rec.status)) continue;
+        if (convId && !String(rec.targetUrl || "").includes(convId)) continue;
+        if (taskId && rec.reportRef && rec.reportRef !== taskId) continue;
+        candidates.push(rec);
+      } catch {
+        // 损坏记录：隔离（移动到 quarantine/ 并审计），使后续发送不再被永久阻断
+        quarantineCorrupt(stateDir, path.join(stateDir, f));
+      }
+    }
+  } catch {}
+  if (runId) candidates = candidates.filter((r) => r.runId === runId);
+  if (candidates.length === 0) return { ok: false, reason: "RECOVER_NO_PENDING", hint: "没有待确认的发送记录（SENDING/SENT/UNKNOWN）" };
+  if (candidates.length > 1) {
+    return {
+      ok: false, reason: "RECOVER_AMBIGUOUS",
+      runIds: candidates.slice(0, 20).map((c) => c.runId),
+      candidatesTruncated: candidates.length > 20,
+      hint: "存在多条待确认记录，请用 --run-id 指定，避免张冠李戴",
+    };
+  }
+  const pending = candidates[0];
+  // 2) 读回
   const list = await (await fetch(cdp + "/json/list")).json();
   const pages = (list || []).filter((t) => t && t.type === "page");
   let page = convId ? pages.find((t) => String(t.url || "").includes(convId)) : null;
@@ -447,22 +737,44 @@ export async function recover({ config, stateDir, convId = null, log = () => {} 
   const last = assistants.length ? assistants[assistants.length - 1] : null;
   const finalConvId = convIdOf(page.url, backend);
   if (!last || !last.text) {
-    return { ok: false, reason: "NO_REPLY_FOUND", convId: finalConvId, targetUrl: page.url, backend: backend.id };
+    return { ok: false, reason: "NO_REPLY_FOUND", convId: finalConvId, targetUrl: page.url, backend: backend.id, pendingRunId: pending.runId };
   }
-  const runId = `r-recover-${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
+  // 3) 指纹匹配：默认必须带 --expect；无校验需显式 --allow-unverified
+  const matchedBy = expect ? "expect" : "allow-unverified";
+  if (expect && !String(last.text).includes(expect)) {
+    return { ok: false, reason: "RECOVER_NO_MATCH", convId: finalConvId, pendingRunId: pending.runId, hint: `最后一条回复未包含指纹 ${expect}，拒绝归属` };
+  }
+  if (!expect && !allowUnverified) {
+    return { ok: false, reason: "RECOVER_UNVERIFIED", convId: finalConvId, pendingRunId: pending.runId, hint: "请用 --expect <task_id/nonce> 校验回复；确需无校验请加 --allow-unverified" };
+  }
+  const newRunId = `r-recover-${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
+  // 把被恢复的旧记录标记为 RECOVERED，避免正常发送流程继续扫描到 pending
+  try {
+    pending.status = "RECOVERED";
+    pending.recoveredAt = new Date().toISOString();
+    pending.recoveredBy = newRunId;
+    writeFileAtomic(path.join(stateDir, `relay_${pending.runId}.json`), JSON.stringify(pending, null, 2));
+  } catch {}
   const rec = {
-    recordType: "relay", schemaVersion: 1, runId, targetUrl: page.url,
+    recordType: "relay", schemaVersion: 1, runId: newRunId, targetUrl: page.url,
     status: "RECOVERED", replyId: last.id || null, replyText: last.text,
-    backend: backend.id, recoveredAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    backend: backend.id, recoveredFrom: pending.runId, matchedBy, candidates: candidates.length,
+    unverifiedRecovery: !expect,
+    recoveredAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   };
   const file = writeRelayRecord(stateDir, rec);
-  log(`[RELAY] 恢复读回成功：${finalConvId || page.url}（护栏已解除）`);
-  return { ok: true, convId: finalConvId, targetUrl: page.url, replyText: last.text, backend: backend.id, recordFile: file, runId };
+  // 人工确认成功：消除本次 recover 产生的隐藏隔离占位（避免继续阻断）
+  resolveQuarantine(stateDir, { status: "RECOVERED", by: newRunId });
+  try {
+    fs.appendFileSync(path.join(stateDir, "audit.log"), JSON.stringify({ at: new Date().toISOString(), action: "recover", recoveredFrom: pending.runId, convId: finalConvId, matchedBy, unverifiedRecovery: !expect }) + "\n", "utf8");
+  } catch {}
+  log(`[RELAY] 恢复读回成功：${finalConvId || page.url}（来自 ${pending.runId}, matchedBy=${matchedBy}）`);
+  return { ok: true, convId: finalConvId, targetUrl: page.url, replyText: last.text, backend: backend.id, recordFile: file, runId: newRunId, recoveredFrom: pending.runId, matchedBy };
 }
 
 // ---- CLI ----
 function parseArgs(argv) {
-  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, probe: false, probeUrl: null, backend: null, diag: false, recover: false, help: false };
+  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, probe: false, probeUrl: null, backend: null, diag: false, recover: false, recoverRun: null, recoverTask: null, recoverExpect: null, recoverUnverified: false, repairWal: false, force: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report-file") out.reportFile = argv[++i];
     else if (argv[i] === "--text") out.text = argv[++i];
@@ -475,6 +787,12 @@ function parseArgs(argv) {
     else if (argv[i] === "--probe-url") out.probeUrl = argv[++i];
     else if (argv[i] === "--diag" || argv[i] === "--health") out.diag = true;
     else if (argv[i] === "--recover") out.recover = true;
+    else if (argv[i] === "--repair-wal") out.repairWal = true;
+    else if (argv[i] === "--force") out.force = true;
+    else if (argv[i] === "--run-id") out.recoverRun = argv[++i];
+    else if (argv[i] === "--task-id") out.recoverTask = argv[++i];
+    else if (argv[i] === "--expect") out.recoverExpect = argv[++i];
+    else if (argv[i] === "--allow-unverified") out.recoverUnverified = true;
     else if (argv[i] === "--help" || argv[i] === "-h") out.help = true;
   }
   return out;
@@ -514,8 +832,19 @@ if (__isMain) {
     console.log("DIAG " + JSON.stringify(d, null, 2));
     process.exit(d.cdp && d.cdp.up ? 0 : 3);
   }
+  if (opts.repairWal) {
+    const r = repairWal(stateDir, { force: opts.force });
+    console.log("REPAIR_WAL " + JSON.stringify(r, null, 2));
+    if (r.blocked) console.error("已隔离但写入 UNKNOWN 占位，发送仍被阻断；确认风险后加 --force，或用 --recover 读回确认。");
+    process.exit(0);
+  }
   if (opts.recover) {
-    const r = await recover({ config, stateDir, convId: opts.conv || null, log: (m) => console.error(m) });
+    const r = await recover({
+      config, stateDir, convId: opts.conv || null,
+      taskId: opts.recoverTask || null, runId: opts.recoverRun || null,
+      expect: opts.recoverExpect || null, allowUnverified: opts.recoverUnverified,
+      log: (m) => console.error(m),
+    });
     console.log("RECOVER " + JSON.stringify(r, null, 2));
     process.exit(r.ok ? 0 : 1);
   }
@@ -530,11 +859,11 @@ if (__isMain) {
       } else {
         const backend = selectBackend(page.url, resolveBackends(config)) || CG;
         const ready = await probePage(page, backend);
-        out = { ok: ready.ready, url: page.url, backend: backend.id, ready, note: "此路径与 sendAndRead(preferConvId) 一致；ready=false 仅表示就绪信号缺失，不代表不能发送" };
+        out = { ok: ready.ready, mode: "sessionDirect", url: page.url, backend: backend.id, ready, note: "此路径与 sendAndRead(preferConvId) 一致；ready=false 仅表示就绪信号缺失，不代表不能发送" };
       }
     } else {
       const r = await resolveTarget({ config, log: (m) => console.error(m), preferBackend: opts.backend || null });
-      out = { ok: r.ok, reason: r.reason, url: r.url, how: r.how, ready: r.ready, hint: r.hint || (r.ok ? undefined : explainReason(r.reason, { cdpHost: config.cdpHost || CDP_DEFAULT })) };
+      out = { ok: r.ok, mode: "readinessGate", reason: r.reason, url: r.url, how: r.how, ready: r.ready, hint: r.hint || (r.ok ? undefined : explainReason(r.reason, { cdpHost: config.cdpHost || CDP_DEFAULT })), note: "就绪门检查；不代表会话发送可用性（会话发送请用 --probe --conv <id>）" };
     }
     console.log("PROBE " + JSON.stringify(out, null, 2));
     if (!out.ok) {

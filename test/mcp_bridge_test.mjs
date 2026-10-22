@@ -176,7 +176,7 @@ await record("M4 结果提交校验：缺证据/未知任务/错误阶段/错误
     await mcp.call("agent_link_submit_result", { project: "proj-a", taskId: "m4-2", ok: true, evidence: ["ok"] });
     const again = await mcp.call("agent_link_submit_result", { project: "proj-a", taskId: "m4-2", ok: true, evidence: ["ok"] });
     assert.equal(again.isError, true);
-    assert.equal(again.obj.code, "INVALID_STATE", "重复提交必须被拒");
+    assert.equal(again.obj.code, "ALREADY_SUBMITTED", "重复提交必须被拒（幂等重放需携带首次 claimToken）");
   } finally { mcp.close(); }
 });
 

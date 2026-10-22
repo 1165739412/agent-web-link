@@ -65,8 +65,16 @@ DS_CONV=<会话ID> node test/send_to_ds.mjs <消息文件> [--retries N]
 - stdout：一行 `DS_ROUND <json>`，含**完整** `replyText`、`recordFile`（完整记录路径）、`backend`、`reason`、`hint`。
 - 失败：额外输出 `DIAG <json>` 与人话 `[DIAG] ...`。
 - 重试：仅对「发送前」失败（未输入/未点击）重试，并逐次打印原因；**发送后失败绝不重发**。
-- 崩溃/中断后：护栏会阻断后续发送（上一次状态为 `SENDING`/`SENT`/`UNKNOWN` 都视为"可能已发出"）。先只读恢复：
-  `node test/relay.mjs --recover --conv <会话ID>`，读回最后一条回复并解除护栏后，再决定是否发送。
+- 崩溃/中断后：护栏会阻断后续发送（`SENDING`/`SENT`/`UNKNOWN` 都视为"可能已发出"）。先只读恢复：
+  `node test/relay.mjs --recover --conv <会话ID> --expect <task_id/nonce>`
+  - 必须**唯一**命中一条待确认记录；多条时用 `--run-id <id>` 指定（否则 `RECOVER_AMBIGUOUS`）；
+  - 回复必须包含 `--expect` 指纹（否则 `RECOVER_NO_MATCH`）；确需无校验加 `--allow-unverified`；
+  - 成功后写 `RECOVERED`（附 `recoveredFrom`/`matchedBy`）并解除护栏，不发送。
+- 发送串行：`sendAndRead` 用 `relay.lock`（O_EXCL，一次写入 pid/token）+ 进程存活判定：持有者 pid 存活且未超硬阈值（`AGENT_LINK_LOCK_HARD_STALE_MS`，默认 2h）不回收；pid 不存活才回收（无 pid 时按 `AGENT_LINK_LOCK_STALE_MS` 兜底）。并发返回 `RELAY_BUSY`；锁被回收后原进程恢复会在发送前/点击前两次校验中拿到 `RELAY_LOCK_LOST`，不会二次发送。
+- WAL 原子性：所有 `relay_*.json` 与 `relay_latest.json` 都用 temp+rename 写；正常发送流程扫描 WAL，遇**损坏**记录返回 `WAL_CORRUPT_BLOCK` 并阻断；`SENDING/lock-acquired`（尚未输入）放行，`SENDING/typing` 及 `SENT/UNKNOWN` 阻断。损坏文件：`node test/relay.mjs --repair-wal` 移入 `stateDir/quarantine/` 并写 UNKNOWN 占位（默认仍阻断）；确认风险后 `--repair-wal --force` 直接放行；`--recover` 成功读回后自动消除占位。
+- 会话作用域：护栏在**目标解析之后**执行（targetId/convId 已定型），按 CDP tab 优先、会话标识（ChatGPT `/c/<id>`、DeepSeek `/s/<id>`）精确匹配；无法确定时**保守阻断**（fail-safe）；新会话首发不会被其他会话旧 pending 误挡（有测试覆盖）。
+- 租约：`claim` 返回 `claimToken`/`leaseExpiresAt`/`leaseTtlMs`；TTL 必须大于最大任务执行时间（默认 30 分钟，`AGENT_LINK_LEASE_TTL_MS` 可调）。超时任务会被回收并换发 token；旧 token 提交返回 `CLAIM_TOKEN_MISMATCH`/`LEASE_EXPIRED`，结果写入项目 `tasksDir/orphan/` 并审计，不静默丢弃。
+- 发送期间勿手动操作目标页面（切会话/关标签页）：护栏依据的 targetId/convId 与点击落点可能不一致（窄窗口，仅提示）。
 
 ## 5. 决策格式与校验
 
@@ -89,7 +97,7 @@ decision: CONTINUE|FIX|COMPLETE|STOP|ASK_USER
 
 - `npm run selftest`：MCP 闭环干跑（不需要浏览器/会话）。
 - `npm run diag` / `send_to_ds --diag`：环境健康。
-- `node test/relay.mjs --recover --conv <会话ID>`：只读恢复（读回最后回复、解除发送护栏，不发送）。
+- `node test/relay.mjs --recover --conv <会话ID> --expect <task_id/nonce>`：只读恢复（读回最后回复、指纹校验、解除发送护栏，不发送）。
 - `node test/send_to_ds.mjs --help`、`node test/relay.mjs --help`、`node test/start-browser.mjs --help`：各自契约。
 - 旧脚本接入：用环境变量或相对发现，不要硬编码绝对路径：
   ```python
@@ -108,7 +116,13 @@ MCP 工具不接收命令、可执行文件、shell 或任意文件路径，只�
 
 因此「先注册」不是官僚流程，而是安全边界。若只是想临时用，注册一个最小项目即可（见 `AGENT_INTEGRATION_GUIDE.md` 步骤 3）。
 
-## 9. 相关文档
+## 9. 资源读取与审计
+
+- `resources/read`（`agent-link://report/{project}/{taskId}`）按登记簿精确查找；任务不属于该项目则拒绝；
+- 每次读取写 `read-report` 审计（项目 stateDir/audit.log）；
+- **注意**：MCP 入口当前是**单一 token**，持有该 token 的本地调用方可读所有已注册项目的报告。若需要"按 agent/任务隔离读取"，需上层部署多实例/多 token；本仓库不做伪隔离。
+
+## 10. 相关文档
 
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)：失败原因表、Windows 编码、Python 引号。
 - [`AGENT_INTEGRATION_GUIDE.md`](AGENT_INTEGRATION_GUIDE.md)：MCP 接入与工具契约。

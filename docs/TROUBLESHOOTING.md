@@ -40,7 +40,10 @@ DS_CONV=<会话ID> node test/send_to_ds.mjs <消息文件> --retries 2
 | `CONTEXT_LIMIT` | 上下文耗尽 | 网页新建对话 |
 | `TYPE_FAILED` | 输入框写入失败 | 检查选择器 / 页面类型 |
 | `CLICK_NO_EFFECT` | 点击后输入框未清空，判定未提交 | 检查发送按钮选择器 |
-| `REPLY_TIMEOUT` | 已发送但读回超时 | 不自动重发；稍后手动重试 |
+| `REPLY_TIMEOUT` | 已发送但读回超时 | 不自动重发；先用 `--recover --expect <id>` 读回确认 |
+| `RELAY_BUSY` | 另一发送进程持有 `relay.lock`（其 pid 仍存活） | 等待其结束；pid 存活时不会回收锁 |
+| `RELAY_LOCK_LOST` | 锁在发送前/点击前被回收 | 放弃本次发送；用 `--recover` 读回确认后再决定 |
+| `WAL_CORRUPT_BLOCK` | 存在损坏的 relay WAL 记录 | 运行 `node test/relay.mjs --repair-wal` 隔离（进 `stateDir/quarantine/`，写 UNKNOWN 占位仍阻断）；确认风险后加 `--force` 放行，或用 `--recover` 读回确认 |
 
 ## 2. `--probe` 与"能不能发"不是一回事
 

@@ -51,7 +51,8 @@ try {
 
   // C5 读回超时
   const before = await readConversation(c).catch(() => ({ msgs: [] }));
-  const reply = await readNewReply(c, before, { pollMs: 200, timeoutMs: 1500, stableNeed: 2 });
+  // 第三参是 backend，第四参才是 opts；此前误把 opts 当 backend，导致走默认 180s 超时
+  const reply = await readNewReply(c, before, undefined, { pollMs: 200, timeoutMs: 1500, stableNeed: 2 });
   await rec("C5 无新回复 → REPLY_TIMEOUT 安全返回", () => { assert.equal(reply.ok, false); assert.equal(reply.reason, "REPLY_TIMEOUT"); });
 
   // C6 网络错误页

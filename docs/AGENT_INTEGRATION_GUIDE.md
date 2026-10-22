@@ -222,12 +222,16 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
     "actions": [],
     "createdAt": "2026-10-21T06:17:05.561Z",
     "submittedAt": "2026-10-21T06:17:05.561Z",
-    "source": "api"
+    "source": "api",
+    "claimToken": "a1b2c3d4",
+    "leaseExpiresAt": "2026-10-22T14:30:00.000Z",
+    "leaseTtlMs": 1800000
   },
-  "instructions": "在任务所属项目内完成实际工作，然后用 agent_link_submit_result 提交可核验证据（证据不得为空）。"
+  "instructions": "在任务所属项目内完成实际工作，然后用 agent_link_submit_result 提交可核验证据（证据不得为空；建议回传 claimToken）。"
 }
 ```
 
+- **租约**：领取返回 `claimToken` + `leaseExpiresAt`（TTL 默认 30 分钟，`AGENT_LINK_LEASE_TTL_MS` 可调）。超时 `RUNNING` 会被回收为 `NEW` 并换发 token；**TTL 必须大于最大任务执行时间**，长任务请调大 TTL。
 - **无任务**：`{ "ok": true, "task": null, "message": "没有待处理任务（安全空闲，不重复执行）" }`
 - **失败**：`UNKNOWN_PROJECT` / `PROJECT_CONFIG_INVALID` / `PROJECT_ROOT_MISSING` / `PROJECT_ROUTE_MISMATCH` / `REGISTRY_CORRUPT`
 - **常见误用**：省略 `project` 导致领到其他项目任务；把 `task:null` 当失败反复轮询（应等待）。
@@ -270,7 +274,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 
 - **用途/时机**：领取并完成工作后，提交结果与证据。
 - **必填**：`project`、`taskId`、`ok`（布尔）、`evidence`（非空：字符串/对象/数组）。
-- **可选**：`summary`、`note`。
+- **可选**：`summary`、`note`、`claimToken`（领取时返回；用于租约校验与幂等重放）。
 - **成功返回（真实结构节选）**：
 
 ```json
@@ -290,7 +294,8 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 }
 ```
 
-- **失败**：`EVIDENCE_REQUIRED`(400) / `INVALID_OK`(400) / `INVALID_STATE`(409) / `PROJECT_ROUTE_MISMATCH`(409) / `TASK_NOT_FOUND` / `UNKNOWN_PROJECT`
+- **失败**：`EVIDENCE_REQUIRED`(400) / `INVALID_OK`(400) / `INVALID_STATE`(409) / `PROJECT_ROUTE_MISMATCH`(409) / `CLAIM_TOKEN_MISMATCH`(409) / `LEASE_EXPIRED`(409) / `ALREADY_SUBMITTED`(409) / `ORPHAN_WRITE_FAILED`(500) / `TASK_NOT_FOUND` / `UNKNOWN_PROJECT`
+- **幂等与孤儿**：已终态且携带首次 `claimToken` → 返回首次报告（`idempotent:true`，不覆盖）；否则 `ALREADY_SUBMITTED`。token 不匹配/租约过期时，结果写入项目 `tasksDir/orphan/` 并审计（不静默丢弃），返回 `orphanFile`。
 - **常见误用**：把 `ok=true` 当任务完成——它只表示“动作已执行且有证据”（`ACTIONS_DONE`），`goalAchieved=false`、`taskComplete=false`。
 - **不具备**：判定目标是否达成；代替 GPT 决策；提交空证据。
 

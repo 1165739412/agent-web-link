@@ -43,6 +43,7 @@ const callTool = (name, args) => JSON.parse(call({
 }).result.content[0].text);
 
 let taskId = null;
+let claimToken = null;
 
 await step("S1 initialize 协商 2025-06-18", () => {
   const r = call({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
@@ -76,6 +77,9 @@ await step("S6 claim_next_task：NEW → RUNNING", () => {
   assert.equal(o.ok, true);
   assert.ok(o.task, "应领到任务");
   assert.equal(o.task.taskId, taskId);
+  assert.ok(o.task.claimToken, "应返回 claimToken（租约）");
+  assert.ok(o.task.leaseExpiresAt, "应返回 leaseExpiresAt");
+  claimToken = o.task.claimToken;
   // 领取返回体不含 phase（设计如此）；RUNNING 由 S8 的 get_task 验证
 });
 await step("S7 重复 claim 不再领到同一任务", () => {
@@ -90,7 +94,7 @@ await step("S8 get_task 状态为 RUNNING", () => {
 });
 await step("S9 submit_result → REPORTED 且证据落盘", () => {
   const o = callTool("agent_link_submit_result", {
-    project: "selftest", taskId, ok: true, evidence: { selftest: true, at: new Date().toISOString() },
+    project: "selftest", taskId, ok: true, evidence: { selftest: true, at: new Date().toISOString() }, claimToken,
   });
   assert.equal(o.ok, true, JSON.stringify(o));
   assert.equal(o.phase, "REPORTED");
@@ -101,6 +105,16 @@ await step("S9b list_reports 能看到该报告（含摘要）", () => {
   const r = o.reports.find((x) => x.taskId === taskId);
   assert.ok(r, "报告应出现在 list_reports");
   assert.equal(r.phase, "REPORTED");
+});
+await step("S9c 同 claimToken 重复提交 → 幂等重放（不覆盖首次报告）", () => {
+  const o = callTool("agent_link_submit_result", { project: "selftest", taskId, ok: true, evidence: { second: true }, claimToken });
+  assert.equal(o.ok, true);
+  assert.equal(o.idempotent, true);
+  assert.equal(o.phase, "REPORTED");
+});
+await step("S9d 错误 claimToken → isError（不覆盖）", () => {
+  const r = call({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: "agent_link_submit_result", arguments: { project: "selftest", taskId, ok: true, evidence: { x: 1 }, claimToken: "deadbeef" } } });
+  assert.equal(r.result.isError, true);
 });
 await step("S10 resources/list 含该报告", () => {
   const r = call({ jsonrpc: "2.0", id: 10, method: "resources/list" });
@@ -114,10 +128,22 @@ await step("S11 resources/read 读回报告", () => {
   const rep = JSON.parse(r.result.contents[0].text);
   assert.equal(rep.taskId, taskId);
   assert.equal(rep.status, "ACTIONS_DONE");
+  const auditFile = path.join(root, ".state", "audit.log");
+  assert.ok(fs.existsSync(auditFile), "读报告应写审计");
+  assert.match(fs.readFileSync(auditFile, "utf8"), /read-report/);
 });
 await step("S12 get_task 终态为 REPORTED", () => {
   const o = callTool("agent_link_get_task", { project: "selftest", taskId });
   assert.equal(o.task.phase, "REPORTED");
+});
+
+await step("S13 空证据提交 → isError（EVIDENCE_REQUIRED）", () => {
+  const r = call({ jsonrpc: "2.0", id: 97, method: "tools/call", params: { name: "agent_link_submit_result", arguments: { project: "selftest", taskId, ok: true, evidence: "" } } });
+  assert.equal(r.result.isError, true);
+});
+await step("S14 resources/read 穿越 → -32602", () => {
+  const r = call({ jsonrpc: "2.0", id: 98, method: "resources/read", params: { uri: "agent-link://report/selftest/..%2F..%2Fetc%2Fpasswd" } });
+  assert.equal(r.error && r.error.code, -32602);
 });
 
 svc.stop();

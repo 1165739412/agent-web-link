@@ -15,6 +15,14 @@ import { validateProjectConfig } from "./project_config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// L2：原子写（临时文件 + rename），防并发注册损坏
+function writeAtomic(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, text, "utf8");
+  fs.renameSync(tmp, file);
+}
+
 const USAGE = `用法: node test/register_project.mjs --name <name> [--root <dir>] [--config <file>] [--projects <file>]
        [--force] [--dry-run] [--emit-report <file>]
 
@@ -108,6 +116,19 @@ if (already && !force) {
   console.log(`  配置: ${cfgPath}`);
   console.log(`  注册表: ${projectsFile}`);
 } else {
+  if (existingIdx >= 0 && force) {
+    // L2：覆盖前打印关键字段 diff
+    try {
+      const oldPath = path.resolve(baseDir, registry.projects[existingIdx].config);
+      const oldCfg = JSON.parse(fs.readFileSync(oldPath, "utf8"));
+      console.log("覆盖前 diff：");
+      for (const k of ["name", "projectRoot", "paths"]) {
+        const o = JSON.stringify(oldCfg[k]);
+        const n = JSON.stringify(cfg[k]);
+        if (o !== n) console.log(`  ${k}: ${o} → ${n}`);
+      }
+    } catch {}
+  }
   if (existingIdx >= 0) {
     if (!force) {
       console.error(`注册表中已有同名项目 ${name}，但配置路径不同: ${registry.projects[existingIdx].config}`);
@@ -123,10 +144,14 @@ if (already && !force) {
     console.log(`[dry-run] 将写入配置: ${cfgPath}`);
     console.log(`[dry-run] 将登记项目: ${name} → ${storedCfg}`);
   } else {
-    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), "utf8");
-    fs.mkdirSync(path.dirname(projectsFile), { recursive: true });
-    fs.writeFileSync(projectsFile, JSON.stringify(registry, null, 2), "utf8");
+    writeAtomic(cfgPath, JSON.stringify(cfg, null, 2));
+    writeAtomic(projectsFile, JSON.stringify(registry, null, 2));
+    // M6：注册审计（append-only）
+    try {
+      const adir = path.join(path.dirname(projectsFile), "state");
+      fs.mkdirSync(adir, { recursive: true });
+      fs.appendFileSync(path.join(adir, "audit.log"), JSON.stringify({ at: new Date().toISOString(), action: "register", project: name, config: storedCfg }) + "\n", "utf8");
+    } catch {}
     console.log(`已写入配置: ${cfgPath}`);
     console.log(`已登记项目: ${name} → ${storedCfg}`);
   }

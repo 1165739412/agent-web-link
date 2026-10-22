@@ -260,6 +260,16 @@ record("V30 resources 能力声明：subscribe=false（不做订阅）", () => {
   const r = call(service, { jsonrpc: "2.0", id: 44, method: "initialize", params: { protocolVersion: "2024-11-05" } }, st);
   assert.equal(r.result.capabilities.resources.subscribe, false);
 });
+record("V34 凭据面：get_task/list_tasks/list_reports 不回传 claimToken/lease/reportToken", () => {
+  const g = call(service, { jsonrpc: "2.0", id: 50, method: "tools/call", params: { name: "agent_link_get_task", arguments: { project: "p1", taskId: "t1" } } });
+  assert.equal(g.result.content[0].text.includes("claimToken"), false);
+  assert.equal(g.result.content[0].text.includes("leaseExpiresAt"), false);
+  const lt = call(service, { jsonrpc: "2.0", id: 51, method: "tools/call", params: { name: "agent_link_list_tasks", arguments: { project: "p1" } } });
+  assert.equal(lt.result.content[0].text.includes("claimToken"), false);
+  const lr = call(service, { jsonrpc: "2.0", id: 52, method: "tools/call", params: { name: "agent_link_list_reports", arguments: { project: "p1" } } });
+  assert.equal(lr.result.content[0].text.includes("reportToken"), false);
+});
+
 record("V33 服务层错误码在 MCP 层的映射稳定（REPORT_TOO_LARGE → -32602 消息携带）", () => {
   const st = { negotiatedVersion: "2024-11-05", initialized: true };
   const big = { ...service, report: () => ({ ok: false, code: "REPORT_TOO_LARGE", message: "报告超过大小上限（1MB）" }) };

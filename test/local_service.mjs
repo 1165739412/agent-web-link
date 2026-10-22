@@ -137,6 +137,29 @@ export function createTaskService({
 
   const proj = (name) => projects.get(name) || null;
 
+  // HIGH-2：被拒提交写入 orphan 区（不静默丢弃），供人工回收/比对
+  function writeOrphan(p, project, { taskId, reason, evidence, summary, note, claimToken }) {
+    try {
+      const dir = path.join(p.config.tasksDir, "orphan");
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `${taskId}-${Date.now().toString(36)}.json`);
+      fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, taskId, project, reason, evidence, summary, note, claimToken, at: now() }, null, 2), "utf8");
+      audit(project, "submit-orphan", { taskId, reason, file: path.basename(file) });
+      return file;
+    } catch { return null; }
+  }
+
+  // M6：append-only 审计（项目 stateDir/audit.log）；只追加，cleanup 不删除最近记录
+  function audit(name, action, data = {}) {
+    try {
+      const px = projects.get(name);
+      const dir = px && px.config ? px.config.stateDir : null;
+      if (!dir) return;
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(path.join(dir, "audit.log"), JSON.stringify({ at: now(), action, project: name, ...data }) + "\n", "utf8");
+    } catch {}
+  }
+
   // C9-ROUTE: 项目上下文一致性校验（注册存在 / 根目录存在且为目录 / 执行器根目录与配置一致）
   // 失败时返回明确错误码，调用方据此显式失败，绝不静默回退到其他项目。
   function resolveProject(name) {
@@ -321,6 +344,25 @@ export function createTaskService({
       const p = rp.p;
       const reg = loadRegistry(p.config.registryFile);
       if (reg.ok === false) return errOut(500, "REGISTRY_CORRUPT", `项目登记簿损坏: ${reg.error}`);
+      // H1：租约回收——RUNNING 且租约过期 → NEW，避免任务永久锁死（TTL 可配）
+      const ttl = Math.max(60000, Number(process.env.AGENT_LINK_LEASE_TTL_MS || 1800000));
+      let reclaimed = 0;
+      for (const t0 of reg.tasks) {
+        if (t0.phase !== PHASES.RUNNING) continue;
+        const exp = t0.leaseExpiresAt ? Date.parse(t0.leaseExpiresAt) : (t0.claimedAt ? Date.parse(t0.claimedAt) + ttl : NaN);
+        if (!Number.isFinite(exp) || exp >= Date.now()) continue;
+        const prevBy = t0.claimedBy || null;
+        t0.phase = PHASES.NEW;
+        t0.updatedAt = now();
+        t0.reclaimedAt = t0.updatedAt;
+        t0.reclaimCount = (t0.reclaimCount || 0) + 1;
+        delete t0.claimedBy; delete t0.claimedAt; delete t0.claimToken; delete t0.leaseExpiresAt;
+        t0.history = Array.isArray(t0.history) ? t0.history : [];
+        t0.history.push({ at: t0.updatedAt, phase: PHASES.NEW, note: `lease expired (was ${prevBy || "unknown"})` });
+        reclaimed++;
+        log(`[RECLAIM] ${name}/${t0.taskId} 租约过期 → NEW（原 ${prevBy || "unknown"}）`);
+      }
+      if (reclaimed) { saveRegistry(p.config.registryFile, reg); audit(name, "reclaim", { count: reclaimed }); }
       // 路由一致性：登记簿内待领取任务的 project 必须与本项目一致，防止错项目任务被领取
       const misrouted = reg.tasks.find((t) => t.phase === PHASES.NEW && t.project && t.project !== name);
       if (misrouted) return errOut(500, "PROJECT_ROUTE_MISMATCH", `项目 ${name} 登记簿存在归属其他项目的任务 ${misrouted.taskId} (project=${misrouted.project})`);
@@ -332,16 +374,20 @@ export function createTaskService({
       if (!t.project) t.project = name; // 兼容旧任务：补写归属
       t.claimedAt = now();
       t.claimedBy = claimedBy;
+      t.claimToken = idGen();
+      t.leaseExpiresAt = new Date(Date.now() + ttl).toISOString();
       updatePhase(reg, t.taskId, PHASES.RUNNING);
       if (!saveRegistry(p.config.registryFile, reg)) return errOut(500, "REGISTRY_WRITE_FAILED", "登记簿写入失败");
-      log(`[CLAIM] ${name}/${t.taskId} → ${claimedBy}（RUNNING）`);
+      log(`[CLAIM] ${name}/${t.taskId} → ${claimedBy}（RUNNING, lease=${t.leaseExpiresAt}）`);
+      audit(name, "claim", { taskId: t.taskId, claimedBy, leaseExpiresAt: t.leaseExpiresAt });
       return {
         ok: true, httpStatus: 200,
         task: {
           taskId: t.taskId, project: name, summary: t.summary, actions: t.actions,
           createdAt: t.createdAt, submittedAt: t.submittedAt ?? null, source: t.source ?? null,
+          claimToken: t.claimToken, leaseExpiresAt: t.leaseExpiresAt, leaseTtlMs: ttl,
         },
-        instructions: "在任务所属项目内完成实际工作，然后用 agent_link_submit_result 提交可核验证据（证据不得为空）。",
+        instructions: "在任务所属项目内完成实际工作，然后用 agent_link_submit_result 提交可核验证据（证据不得为空；建议回传 claimToken）。",
       };
     }
     return { ok: true, httpStatus: 200, task: null, message: "没有待处理任务（安全空闲，不重复执行）" };
@@ -349,7 +395,7 @@ export function createTaskService({
 
   // C9-R21 桥接：提交任务结果。必须校验 project/taskId 归属与 phase，且要求非空证据；
   // 无真实证据不得把工作标记为完成；ok=true 也只是 ACTIONS_DONE（goalAchieved 恒为 false）。
-  function submitResult({ project, taskId, ok, evidence, summary = null, note = null } = {}) {
+  function submitResult({ project, taskId, ok, evidence, summary = null, note = null, claimToken = null } = {}) {
     const rp = resolveProject(project);
     if (!rp.ok) return errOut(rp.httpStatus, rp.code, rp.message);
     const p = rp.p;
@@ -368,8 +414,40 @@ export function createTaskService({
       return errOut(409, "PROJECT_ROUTE_MISMATCH", `任务 ${taskId} 归属 ${t.project}，不能由项目 ${project} 提交结果`);
     }
     if (!t.project) t.project = project;
+
+    // H4：幂等重放——已终态且携带首次 claimToken 时返回首次结果，不覆盖
+    if ([PHASES.REPORTED, PHASES.FAILED].includes(t.phase)) {
+      if (claimToken && t.claimToken && claimToken === t.claimToken) {
+        let report = null;
+        if (t.reportFile && fs.existsSync(t.reportFile)) { try { report = JSON.parse(fs.readFileSync(t.reportFile, "utf8")); } catch {} }
+        log(`[SUBMIT-RESULT] ${project}/${taskId} 幂等重放（phase=${t.phase}）`);
+        audit(project, "submit-idempotent", { taskId, phase: t.phase });
+        return { ok: true, httpStatus: 200, phase: t.phase, report, idempotent: true };
+      }
+      return errOut(409, "ALREADY_SUBMITTED", `任务已提交（phase=${t.phase}）；如需重放请携带首次 claimToken`);
+    }
     if (![PHASES.RUNNING, PHASES.NEW].includes(t.phase)) {
       return errOut(409, "INVALID_STATE", `任务当前 phase=${t.phase}，不可提交结果`);
+    }
+    // H1：租约校验（仅对有 claimToken 的任务；旧任务保持兼容）
+    if (t.claimToken) {
+      if (claimToken && claimToken !== t.claimToken) {
+        const orphanFile = writeOrphan(p, project, { taskId, reason: "CLAIM_TOKEN_MISMATCH", evidence, summary, note, claimToken });
+        if (!orphanFile) return errOut(500, "ORPHAN_WRITE_FAILED", "提交被拒（CLAIM_TOKEN_MISMATCH）且 orphan 写入失败，请人工核对");
+        const e = errOut(409, "CLAIM_TOKEN_MISMATCH", "claimToken 与当前租约不匹配（任务可能已被回收/重新领取）");
+        e.orphanFile = orphanFile;
+        return e;
+      }
+      if (!claimToken) {
+        const exp = t.leaseExpiresAt ? Date.parse(t.leaseExpiresAt) : NaN;
+        if (Number.isFinite(exp) && exp < Date.now()) {
+          const orphanFile = writeOrphan(p, project, { taskId, reason: "LEASE_EXPIRED", evidence, summary, note, claimToken });
+          if (!orphanFile) return errOut(500, "ORPHAN_WRITE_FAILED", "提交被拒（LEASE_EXPIRED）且 orphan 写入失败，请人工核对");
+          const e = errOut(409, "LEASE_EXPIRED", "领取租约已过期，请重新 claim 后再提交（避免旧 Agent 覆盖）");
+          e.orphanFile = orphanFile;
+          return e;
+        }
+      }
     }
 
     const finishedAt = now();
@@ -391,13 +469,14 @@ export function createTaskService({
     const file = reportFileOf(p, taskId);
     writeReportFile(file, report);
     t.finishedAt = finishedAt;
-    t.agentResult = { ok, evidence, summary, note, submittedAt: finishedAt };
+    t.agentResult = { ok, evidence, summary, note, submittedAt: finishedAt, claimToken: claimToken || t.claimToken || null };
     updatePhase(reg, taskId, ok ? PHASES.REPORTED : PHASES.FAILED, {
       results: [], reportFile: file, reportToken,
       stopReason: ok ? undefined : "Agent 提交结果为失败",
     });
     saveRegistry(p.config.registryFile, reg);
     log(`[SUBMIT-RESULT] ${project}/${taskId} ok=${ok} → ${ok ? PHASES.REPORTED : PHASES.FAILED}`);
+    audit(project, "submit", { taskId, ok, phase: ok ? PHASES.REPORTED : PHASES.FAILED });
     return { ok: true, httpStatus: 200, phase: ok ? PHASES.REPORTED : PHASES.FAILED, report };
   }
 

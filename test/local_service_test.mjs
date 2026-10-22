@@ -432,6 +432,65 @@ await record("LS-CFG listProjects 返回脱敏的 configErrors（不回显绝对
   assert.ok(!/[A-Za-z]:[\\/]/.test(JSON.stringify(lp.configErrors)), "不得回显盘符绝对路径");
 });
 
+// LS-LEASE 租约过期回收（DS 评审 H1）
+await record("LS-LEASE 租约过期 → 再次 claim 回收并换发 claimToken", async () => {
+  const a = makeProject("lslease", "proj-a");
+  const svc = createTaskService({ projectsFile: makeProjectsRegistry("lslease", [a]), tokenFile: path.join(BASE, "lslease", "token.txt"), worker: async () => ({ ok: true, results: [] }), log: () => {} });
+  const sub = svc.submit({ project: "proj-a", taskId: "lease-1", summary: "lease", mode: "agent" });
+  assert.equal(sub.ok, true, JSON.stringify(sub));
+  const c1 = svc.claimNext({ project: "proj-a", claimedBy: "a1" });
+  assert.ok(c1.task.claimToken, "首次领取应有 claimToken");
+  assert.ok(c1.task.leaseExpiresAt, "首次领取应有 leaseExpiresAt");
+  const regFile = path.join(a.tasksDir, "registry.json");
+  const reg = loadRegistry(regFile);
+  reg.tasks.find((t) => t.taskId === "lease-1").leaseExpiresAt = new Date(Date.now() - 1000).toISOString();
+  saveRegistry(regFile, reg);
+  const c2 = svc.claimNext({ project: "proj-a", claimedBy: "a2" });
+  assert.equal(c2.task.taskId, "lease-1", "过期任务应可重新领取");
+  assert.notEqual(c2.task.claimToken, c1.task.claimToken, "回收后应换发新 token");
+  const reg2 = loadRegistry(regFile);
+  assert.equal(reg2.tasks.find((t) => t.taskId === "lease-1").reclaimCount, 1);
+});
+
+// LS-IDEM 幂等提交（DS 评审 H4）
+await record("LS-IDEM 同 token 重放返回首次报告；错 token 拒绝", async () => {
+  const a = makeProject("lsidem", "proj-a");
+  const svc = createTaskService({ projectsFile: makeProjectsRegistry("lsidem", [a]), tokenFile: path.join(BASE, "lsidem", "token.txt"), worker: async () => ({ ok: true, results: [] }), log: () => {} });
+  svc.submit({ project: "proj-a", taskId: "idem-1", summary: "idem", mode: "agent" });
+  const c = svc.claimNext({ project: "proj-a", claimedBy: "a1" });
+  const token = c.task.claimToken;
+  const r1 = svc.submitResult({ project: "proj-a", taskId: "idem-1", ok: true, evidence: { e: 1 }, claimToken: token });
+  assert.equal(r1.phase, "REPORTED");
+  const r2 = svc.submitResult({ project: "proj-a", taskId: "idem-1", ok: true, evidence: { e: 2 }, claimToken: token });
+  assert.equal(r2.ok, true);
+  assert.equal(r2.idempotent, true);
+  assert.equal(r2.report.evidence.e, 1, "幂等重放应返回首次报告，不覆盖");
+  const r3 = svc.submitResult({ project: "proj-a", taskId: "idem-1", ok: true, evidence: { e: 3 }, claimToken: "bad" });
+  assert.equal(r3.ok, false);
+  assert.equal(r3.code, "ALREADY_SUBMITTED");
+});
+
+// LS-ORPHAN 旧 token 提交被拒 → 写 orphan 并审计（DS HIGH-2）
+await record("LS-ORPHAN 旧 token 提交被拒 → 写 orphan，不静默丢弃", async () => {
+  const a = makeProject("lsorphan", "proj-a");
+  const svc = createTaskService({ projectsFile: makeProjectsRegistry("lsorphan", [a]), tokenFile: path.join(BASE, "lsorphan", "token.txt"), worker: async () => ({ ok: true, results: [] }), log: () => {} });
+  svc.submit({ project: "proj-a", taskId: "orphan-1", summary: "o", mode: "agent" });
+  const c1 = svc.claimNext({ project: "proj-a", claimedBy: "a1" });
+  const regFile = path.join(a.tasksDir, "registry.json");
+  const reg = loadRegistry(regFile);
+  reg.tasks.find((t) => t.taskId === "orphan-1").leaseExpiresAt = new Date(Date.now() - 1000).toISOString();
+  saveRegistry(regFile, reg);
+  const c2 = svc.claimNext({ project: "proj-a", claimedBy: "a2" }); // 回收并换 token
+  assert.notEqual(c2.task.claimToken, c1.task.claimToken);
+  const r = svc.submitResult({ project: "proj-a", taskId: "orphan-1", ok: true, evidence: { late: true }, claimToken: c1.task.claimToken });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, "CLAIM_TOKEN_MISMATCH");
+  assert.ok(r.orphanFile && fs.existsSync(r.orphanFile), "应写 orphan 文件");
+  const orphan = JSON.parse(fs.readFileSync(r.orphanFile, "utf8"));
+  assert.equal(orphan.reason, "CLAIM_TOKEN_MISMATCH");
+  assert.equal(orphan.evidence.late, true);
+});
+
 fs.rmSync(BASE, { recursive: true, force: true });
 console.log(results.join("\n"));
 const failed = results.filter((r) => r.startsWith("FAIL"));

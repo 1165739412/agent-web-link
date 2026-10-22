@@ -11,6 +11,7 @@
 //   - 工具执行错误以 result.isError=true 返回（双通道错误机制），协议错误用 JSON-RPC error；
 //   - 协商到 2025-06-18 及以上时，tools/call 额外返回 structuredContent（同时保留 text 兼容）；
 //   - 传输: 换行分隔的 JSON-RPC 2.0（stdout 只输出协议消息，日志一律走 stderr）。
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTaskService, DEFAULT_PROJECTS_FILE, DEFAULT_TOKEN_FILE } from "./local_service.mjs";
@@ -211,6 +212,7 @@ export const TOOLS = [
         evidence: { description: "可核验证据：字符串 / 对象 / 数组（不得为空）" },
         summary: { type: "string", maxLength: 2000 },
         note: { type: "string", maxLength: 2000 },
+        claimToken: { type: "string", description: "可选：领取时返回的 claimToken（用于租约校验与幂等重放）", maxLength: 80 },
       },
       required: ["project", "taskId", "ok", "evidence"],
       additionalProperties: false,
@@ -357,6 +359,14 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
       const { httpStatus, ...rest } = r;
       return { jsonrpc: "2.0", id, error: { code: -32602, message: `资源读取失败: ${rest.code || "UNKNOWN"} ${rest.message || ""}`.trim() } };
     }
+    // 读报告审计（DS：把"谁能读"变成可验证）；归属由 registry 精确查找保证
+    try {
+      const cfg = service.projectConfig(project);
+      if (cfg && cfg.stateDir) {
+        fs.mkdirSync(cfg.stateDir, { recursive: true });
+        fs.appendFileSync(path.join(cfg.stateDir, "audit.log"), JSON.stringify({ at: new Date().toISOString(), action: "read-report", project, taskId }) + "\n", "utf8");
+      }
+    } catch {}
     return {
       jsonrpc: "2.0", id,
       result: { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(r.report, null, 2) }] },
@@ -387,6 +397,7 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
       else res = service.submitResult({
         project: args.project, taskId: args.taskId, ok: args.ok,
         evidence: args.evidence, summary: args.summary ?? null, note: args.note ?? null,
+        claimToken: args.claimToken ?? null,
       });
     } catch (e) {
       log(`[MCP][AUDIT] id=${String(id).slice(0, 40)} tool=${name} ok=false ms=${Date.now() - t0} error=${e.message}`);

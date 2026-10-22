@@ -22,10 +22,12 @@ const PRE_SEND = new Set([
 const isPreSend = (reason) => PRE_SEND.has(reason) || /^读取基线失败/.test(reason || "");
 
 function parseArgs(argv) {
-  const out = { file: null, conv: null, retries: 0, retryDelayMs: 3000, diag: false, help: false };
+  const out = { file: null, conv: null, taskId: null, expect: null, retries: 0, retryDelayMs: 3000, diag: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--conv") out.conv = argv[++i];
+    else if (a === "--task-id") out.taskId = argv[++i];
+    else if (a === "--expect") out.expect = argv[++i];
     else if (a === "--retries") out.retries = Math.max(0, parseInt(argv[++i], 10) || 0);
     else if (a === "--retry-delay-ms") out.retryDelayMs = Math.max(0, parseInt(argv[++i], 10) || 0);
     else if (a === "--diag") out.diag = true;
@@ -40,6 +42,8 @@ const USAGE = `用法: DS_CONV=<会话ID> node test/send_to_ds.mjs <消息文件
 
 选项:
   --conv <id>          指定 DeepSeek 会话 ID（也可用环境变量 DS_CONV）
+  --task-id <id>       可选：任务/报告引用（写入 relay 记录，便于 --recover 过滤）
+  --expect <s>         可选：失败时提示的 recover 指纹（通常是 task_id/nonce）
   --retries N          仅对"发送前"失败重试（默认 0；发送后失败绝不重发）
   --retry-delay-ms N   重试间隔毫秒（默认 3000）
   --diag               只诊断 CDP/标签页/登录就绪，不发送
@@ -85,7 +89,7 @@ const attempts = opts.retries + 1;
 for (let i = 1; i <= attempts; i++) {
   log(`[SEND] 第 ${i}/${attempts} 次 → 会话 ${CONV}`);
   const t0 = Date.now();
-  const rr = await sendAndRead({ config: cfg, text, stateDir: "test/state", preferConvId: CONV, log });
+  const rr = await sendAndRead({ config: cfg, text, stateDir: "test/state", preferConvId: CONV, reportRef: opts.taskId || null, log });
   last = rr;
   log(`[SEND] 结果 ok=${rr.ok} reason=${rr.reason || "-"} 用时=${Date.now() - t0}ms backend=${rr.backend || "-"}`);
   if (rr.ok) break;
@@ -117,4 +121,8 @@ console.error("DIAG " + JSON.stringify(d, null, 2));
 for (const h of d.hints || []) console.error("[DIAG] " + h);
 if (hint) console.error("[DIAG] " + hint);
 if (last.replyText) console.error(`[DIAG] 已捕获部分回复（见 DS_ROUND.replyText）；完整记录见 ${last.recordFile || "test/state/"}`);
+if (last.runId) {
+  console.error(`[DIAG] 若为发送后崩溃/超时，先只读恢复（不要直接重发）：`);
+  console.error(`[DIAG]   node test/relay.mjs --recover --conv ${CONV} --run-id ${last.runId}${opts.expect ? ` --expect ${opts.expect}` : " --expect <task_id/nonce>"}`);
+}
 process.exit(1);
