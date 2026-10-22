@@ -65,6 +65,8 @@ DS_CONV=<会话ID> node test/send_to_ds.mjs <消息文件> [--retries N]
 - stdout：一行 `DS_ROUND <json>`，含**完整** `replyText`、`recordFile`（完整记录路径）、`backend`、`reason`、`hint`。
 - 失败：额外输出 `DIAG <json>` 与人话 `[DIAG] ...`。
 - 重试：仅对「发送前」失败（未输入/未点击）重试，并逐次打印原因；**发送后失败绝不重发**。
+- 崩溃/中断后：护栏会阻断后续发送（上一次状态为 `SENDING`/`SENT`/`UNKNOWN` 都视为"可能已发出"）。先只读恢复：
+  `node test/relay.mjs --recover --conv <会话ID>`，读回最后一条回复并解除护栏后，再决定是否发送。
 
 ## 5. 决策格式与校验
 
@@ -87,6 +89,7 @@ decision: CONTINUE|FIX|COMPLETE|STOP|ASK_USER
 
 - `npm run selftest`：MCP 闭环干跑（不需要浏览器/会话）。
 - `npm run diag` / `send_to_ds --diag`：环境健康。
+- `node test/relay.mjs --recover --conv <会话ID>`：只读恢复（读回最后回复、解除发送护栏，不发送）。
 - `node test/send_to_ds.mjs --help`、`node test/relay.mjs --help`、`node test/start-browser.mjs --help`：各自契约。
 - 旧脚本接入：用环境变量或相对发现，不要硬编码绝对路径：
   ```python

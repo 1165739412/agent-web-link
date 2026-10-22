@@ -409,13 +409,21 @@ export function createTaskService({
       name: p.name,
       hasRegistry: fs.existsSync(p.config.registryFile),
     }));
-    // 配置错误可诊断（反馈：只有 configErrorCount 无法定位）——给出项目名与脱敏原因，
-    // 绝对路径统一替换为 <path>，保持信息面白名单（不回显本机路径）。
-    const redact = (s) => String(s)
-      .replace(/[A-Za-z]:[\\/][^\s;，,）)]*/g, "<path>")
-      .replace(/(^|[\s(（])\/[^\s;，,）)]*/g, "$1<path>");
+    // 配置错误可诊断（反馈：只有 configErrorCount 无法定位）——只回传结构化错误码，
+    // 不回传原始 message（避免路径/用户名/主机名泄露；DS 评审 M2）。
+    const classifyConfigError = (m) => {
+      const s = String(m || "");
+      if (/非合法 JSON/.test(s)) return "CONFIG_INVALID_JSON";
+      if (/schemaVersion/.test(s)) return "CONFIG_SCHEMA_UNSUPPORTED";
+      if (/配置不存在|文件不存在/.test(s)) return "CONFIG_MISSING";
+      if (/projectRoot/.test(s)) return "PROJECT_ROOT_INVALID";
+      if (/越界/.test(s)) return "PATH_OUT_OF_ROOT";
+      if (/重复/.test(s)) return "DUPLICATE_NAME";
+      if (/缺少/.test(s)) return "MISSING_FIELD";
+      return "CONFIG_INVALID";
+    };
     const configErrors = Object.entries(projectErrors || {})
-      .map(([project, message]) => ({ project, message: redact(message) }));
+      .map(([project, message]) => ({ project, code: classifyConfigError(message) }));
     const errCount = configErrors.length;
     return {
       ok: true, httpStatus: 200,
@@ -472,7 +480,6 @@ export function createTaskService({
       taskId: t.taskId,
       phase: t.phase,
       summary: t.summary ? String(t.summary).slice(0, 200) : null,
-      reportToken: t.reportToken || null,
       finishedAt: t.finishedAt || null,
       createdAt: t.createdAt || null,
     }));

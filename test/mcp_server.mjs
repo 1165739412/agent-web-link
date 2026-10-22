@@ -64,8 +64,8 @@ export const TOOLS = [
           type: "array",
           items: {
             type: "object",
-            required: ["project", "message"],
-            properties: { project: { type: "string" }, message: { type: "string" } },
+            required: ["project", "code"],
+            properties: { project: { type: "string" }, code: { type: "string" } },
             additionalProperties: false,
           },
         },
@@ -153,7 +153,6 @@ export const TOOLS = [
               taskId: { type: "string" },
               phase: { type: "string" },
               summary: { type: ["string", "null"] },
-              reportToken: { type: ["string", "null"] },
               finishedAt: { type: ["string", "null"] },
               createdAt: { type: ["string", "null"] },
             },
@@ -338,7 +337,7 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
         }
       }
     }
-    return { jsonrpc: "2.0", id, result: { resources: out, truncated: total > out.length } };
+    return { jsonrpc: "2.0", id, result: { resources: out, _meta: { truncated: total > out.length } } };
   }
   if (method === "resources/read") {
     const uri = String(params?.uri || "");

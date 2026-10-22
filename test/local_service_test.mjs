@@ -427,8 +427,9 @@ await record("LS-CFG listProjects 返回脱敏的 configErrors（不回显绝对
   assert.equal(lp.configErrorCount, 1);
   assert.equal(lp.configErrors.length, 1);
   assert.equal(lp.configErrors[0].project, "bad-proj");
-  assert.ok(lp.configErrors[0].message.length > 0, "应给出可读原因");
-  assert.ok(!/[A-Za-z]:[\\/]/.test(lp.configErrors[0].message), "不得回显盘符绝对路径");
+  assert.ok(lp.configErrors[0].code, "应给出结构化错误码");
+  assert.equal(lp.configErrors[0].message, undefined, "不得回传原始 message");
+  assert.ok(!/[A-Za-z]:[\\/]/.test(JSON.stringify(lp.configErrors)), "不得回显盘符绝对路径");
 });
 
 fs.rmSync(BASE, { recursive: true, force: true });

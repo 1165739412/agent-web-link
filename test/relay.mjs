@@ -23,13 +23,14 @@ export const RELAY_CONFIG_DEFAULT = path.join(__dirname, "relay.config.json");
 export const CDP_DEFAULT = "http://127.0.0.1:9222";
 
 const RELAY_USAGE = `用法: node test/relay.mjs [--report-file <f> | --text <s>] [--conv <id>] [--backend deepseek|chatgpt]
-       [--json-out <f>] [--config <f>] [--state-dir <dir>] | --probe [--conv <id>] | --diag | --probe-url <url>
+       [--json-out <f>] [--config <f>] [--state-dir <dir>] | --probe [--conv <id>] | --diag | --recover [--conv <id>] | --probe-url <url>
 
   --report-file/--text  发送内容（二选一）
   --conv <id>           只发送到包含该会话 ID 的标签页
   --backend <id>        首选后端（chatgpt/deepseek），优先于 config.preferBackend
   --probe               就绪探测（不带 --conv 走就绪门；带 --conv 与发送同路径）
-  --diag                仅诊断 CDP/标签页/登录就绪，不发送
+  --diag / --health     仅诊断 CDP/标签页/登录就绪，不发送
+  --recover             只读恢复：读回已有会话最后一条回复并解除发送护栏（不发送）
   --probe-url <url>     导航到指定 URL 后探测
   -h, --help            显示本帮助
 
@@ -184,14 +185,21 @@ export async function resolveTarget({ config, log = () => {}, preferBackend = nu
 // 注：以上 typeIntoComposer / clickSendOnce / readNewReply 的实际实现已迁移至 agent_backends.mjs，
 // 此处仅保留向后兼容的封装（见文件顶部），避免重复导出导致语法错误。
 
-// 传输状态护栏：上一次发送若停在 SENDING（崩溃/未确认），拒绝自动重发
+// 传输状态护栏：上一次若停在 SENDING/SENT/UNKNOWN（可能已发送但未确认），拒绝自动重发。
+// 崩溃一致性（DS 评审 BLOCKER B1）：SENT/UNKNOWN 也属于"可能已提交"，必须先 --recover 读回确认。
+export const PENDING_SEND_STATES = ["SENDING", "SENT", "UNKNOWN"];
 export function checkRelayGuard(stateDir) {
   const p = path.join(stateDir, "relay_latest.json");
   if (!fs.existsSync(p)) return { ok: true };
   try {
     const prev = JSON.parse(fs.readFileSync(p, "utf8"));
-    if (prev && prev.status === "SENDING") {
-      return { ok: false, reason: `上一次中转发送未确认（${prev.runId || ""} status=SENDING），需人工复核，禁止自动重发` };
+    if (prev && PENDING_SEND_STATES.includes(prev.status)) {
+      return {
+        ok: false,
+        status: prev.status,
+        runId: prev.runId || null,
+        reason: `上一次中转状态为 ${prev.status}（${prev.runId || ""}），可能已发送但未确认；禁止自动重发。请先运行 --recover --conv <会话ID> 读回确认，或人工处理`,
+      };
     }
     return { ok: true };
   } catch (e) {
@@ -417,9 +425,44 @@ export async function sendAndRead({ config, text, stateDir, log = () => {}, pref
   return { ok: true, runId, targetUrl: finalUrl, convId, how: tgt.how, replyText: reply.replyText, replyId: reply.replyId, beforeCount: rec.beforeCount, afterCount: reply.afterCount, recordFile: file, backend: backend.id, fallback: fallbackUsed };
 }
 
+// 只读恢复（DS 评审 HIGH H3）：attach 已有会话，读回最后一条助手回复，不发送。
+// 成功后写一条 RECOVERED 记录并更新 relay_latest，解除护栏（人工确认语义）。
+export async function recover({ config, stateDir, convId = null, log = () => {} }) {
+  const cdp = config.cdpHost || CDP_DEFAULT;
+  const backends = resolveBackends(config);
+  const list = await (await fetch(cdp + "/json/list")).json();
+  const pages = (list || []).filter((t) => t && t.type === "page");
+  let page = convId ? pages.find((t) => String(t.url || "").includes(convId)) : null;
+  if (!page) {
+    const pats = chatPageUrlPatterns(backends);
+    page = pages.find((t) => pats.some((rx) => rx.test(t.url || "")));
+  }
+  if (!page) return { ok: false, reason: "NO_CHATGPT_PAGE", hint: explainReason("NO_CHATGPT_PAGE", { cdpHost: cdp }) };
+  const backend = selectBackend(page.url, backends) || CG;
+  const c = await WSClient.connect(page.webSocketDebuggerUrl);
+  let snap;
+  try { snap = await readConversation(c, readSelOf(backend)); }
+  finally { await c.close("recover-read"); }
+  const assistants = (snap.msgs || []).filter((m) => m.role === "assistant");
+  const last = assistants.length ? assistants[assistants.length - 1] : null;
+  const finalConvId = convIdOf(page.url, backend);
+  if (!last || !last.text) {
+    return { ok: false, reason: "NO_REPLY_FOUND", convId: finalConvId, targetUrl: page.url, backend: backend.id };
+  }
+  const runId = `r-recover-${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
+  const rec = {
+    recordType: "relay", schemaVersion: 1, runId, targetUrl: page.url,
+    status: "RECOVERED", replyId: last.id || null, replyText: last.text,
+    backend: backend.id, recoveredAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  };
+  const file = writeRelayRecord(stateDir, rec);
+  log(`[RELAY] 恢复读回成功：${finalConvId || page.url}（护栏已解除）`);
+  return { ok: true, convId: finalConvId, targetUrl: page.url, replyText: last.text, backend: backend.id, recordFile: file, runId };
+}
+
 // ---- CLI ----
 function parseArgs(argv) {
-  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, probe: false, probeUrl: null, backend: null, diag: false, help: false };
+  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, probe: false, probeUrl: null, backend: null, diag: false, recover: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report-file") out.reportFile = argv[++i];
     else if (argv[i] === "--text") out.text = argv[++i];
@@ -430,7 +473,8 @@ function parseArgs(argv) {
     else if (argv[i] === "--backend") out.backend = argv[++i];
     else if (argv[i] === "--probe") out.probe = true;
     else if (argv[i] === "--probe-url") out.probeUrl = argv[++i];
-    else if (argv[i] === "--diag") out.diag = true;
+    else if (argv[i] === "--diag" || argv[i] === "--health") out.diag = true;
+    else if (argv[i] === "--recover") out.recover = true;
     else if (argv[i] === "--help" || argv[i] === "-h") out.help = true;
   }
   return out;
@@ -469,6 +513,11 @@ if (__isMain) {
     const d = await diagnose({ cdpHost: config.cdpHost || CDP_DEFAULT, backends: resolveBackends(config), convId: opts.conv || null, backend: opts.backend || null });
     console.log("DIAG " + JSON.stringify(d, null, 2));
     process.exit(d.cdp && d.cdp.up ? 0 : 3);
+  }
+  if (opts.recover) {
+    const r = await recover({ config, stateDir, convId: opts.conv || null, log: (m) => console.error(m) });
+    console.log("RECOVER " + JSON.stringify(r, null, 2));
+    process.exit(r.ok ? 0 : 1);
   }
   if (opts.probe) {
     let out;

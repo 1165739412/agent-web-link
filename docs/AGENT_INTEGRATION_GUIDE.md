@@ -298,8 +298,8 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 
 - **用途/时机**：接入前发现已注册项目与健康状态。
 - **参数**：无。
-- **返回**：`projects: [{ name, hasRegistry }]`、`configErrorCount`（配置错误计数，原文只进服务端日志）、
-  `queueDepth`、`running`、`version`。
+- **返回**：`projects: [{ name, hasRegistry }]`、`configErrors: [{ project, code }]`（只回结构化错误码，如
+  CONFIG_MISSING / PROJECT_ROOT_INVALID；原文只进服务端日志）、`configErrorCount`、`queueDepth`、`running`、`version`。
 - **信息面白名单**：不回显绝对路径、登记簿路径与配置错误原文。
 
 ### 3.5 `agent_link_list_tasks`（只读）
@@ -313,7 +313,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 
 - **用途/时机**：识别 MCP 资源里 `agent-link://report/...` 到底是什么、以及清理旧报告前的清单。
 - **必填**：`project`。**可选**：`limit`（默认 20，≤100）。
-- **返回**：按完成时间倒序的 `reports: [{ taskId, phase, summary(截断 200 字), reportToken, finishedAt, createdAt }]` + `total`/`returned`；**不含文件路径**。
+- **返回**：按完成时间倒序的 `reports: [{ taskId, phase, summary(截断 200 字), finishedAt, createdAt }]` + `total`/`returned`；**不含文件路径与令牌**。
 - **清理**：MCP 不提供删除工具（破坏性操作不进协议）。用 `npm run cleanup:reports -- --project <name> --before <ISO> [--keep N] [--yes]`，默认 dry-run。
 - **失败**：`UNKNOWN_PROJECT` / `PROJECT_CONFIG_INVALID` / `REGISTRY_CORRUPT`。
 

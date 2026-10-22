@@ -18,13 +18,13 @@ const service = {
   claimNext: ({ project, claimedBy }) => { calls.push(["claim", project, claimedBy]); return { ok: true, task: { taskId: "t1", project: project || "p1" } }; },
   status: ({ project, taskId }) => ({ ok: true, taskId, phase: "RUNNING", project }),
   submitResult: ({ ok, evidence }) => ({ ok: !!ok, phase: ok ? "REPORTED" : "FAILED" }),
-  listProjects: () => ({ ok: true, version: "test-1", projects: [{ name: "p1", hasRegistry: true }], configErrors: [{ project: "bad", message: "<path> 配置非法" }], configErrorCount: 1, queueDepth: 0, running: true }),
+  listProjects: () => ({ ok: true, version: "test-1", projects: [{ name: "p1", hasRegistry: true }], configErrors: [{ project: "bad", code: "CONFIG_INVALID" }], configErrorCount: 1, queueDepth: 0, running: true }),
   listTasks: ({ project, phase, limit }) => {
     const all = [{ taskId: "t1", phase: "NEW", hasReport: false }, { taskId: "t2", phase: "REPORTED", hasReport: true }];
     const filtered = all.filter((t) => !phase || t.phase === phase).slice(0, limit || 20);
     return { ok: true, project, total: all.length, returned: filtered.length, tasks: filtered };
   },
-  listReports: ({ project, limit }) => ({ ok: true, project, total: 1, returned: 1, reports: [{ taskId: "t2", phase: "REPORTED", summary: "s", reportToken: "C3R-x", finishedAt: null, createdAt: null }].slice(0, limit || 20) }),
+  listReports: ({ project, limit }) => ({ ok: true, project, total: 1, returned: 1, reports: [{ taskId: "t2", phase: "REPORTED", summary: "s", finishedAt: null, createdAt: null }].slice(0, limit || 20) }),
   report: ({ project, taskId }) => (project === "p1" && taskId === "t2"
     ? { ok: true, report: { taskId, project, status: "ACTIONS_DONE", evidence: { src: "stub" } } }
     : { ok: false, code: project === "p1" ? "REPORT_NOT_FOUND" : "UNKNOWN_PROJECT", message: "桩：仅 p1/t2 有报告" }),
@@ -172,6 +172,8 @@ record("V21 list_projects 信息面白名单：结构白名单断言（DS 评审
   // 配置错误可诊断（反馈：只有 configErrorCount 无法定位）
   assert.equal(parsed.configErrors.length, 1);
   assert.equal(parsed.configErrors[0].project, "bad");
+  assert.equal(parsed.configErrors[0].code, "CONFIG_INVALID");
+  assert.equal(parsed.configErrors[0].message, undefined, "不得回传原始 message");
   // 辅助黑名单（不作为主要手段）：不出现登记簿/错误原文键名
   const text = r.result.content[0].text;
   assert.equal(text.includes("registryFile") || text.includes("projectErrors"), false);
@@ -286,7 +288,8 @@ record("V31 resources/read 路径安全：穿越/绝对路径/UNC 一律 -32602"
 record("V32 resources/list 截断语义：truncated 显式（未截断为 false）", () => {
   const st = { negotiatedVersion: "2024-11-05", initialized: true };
   const r = call(service, { jsonrpc: "2.0", id: 47, method: "resources/list" }, st);
-  assert.equal(r.result.truncated, false);
+  assert.equal(r.result._meta.truncated, false);
+  assert.equal(r.result.truncated, undefined, "truncated 应迁到 _meta");
   assert.ok(Array.isArray(r.result.resources));
 });
 

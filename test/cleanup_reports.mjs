@@ -46,7 +46,12 @@ if (!cfg) { console.error(`项目未注册或配置未加载: ${project}`); proc
 const reg = loadRegistry(cfg.registryFile);
 if (reg.ok === false) { console.error(`登记簿损坏: ${reg.error}`); process.exit(1); }
 
-const tasksDir = path.resolve(cfg.tasksDir) + path.sep;
+const tasksReal = (() => {
+  try {
+    const rp = fs.realpathSync.native ? fs.realpathSync.native(path.resolve(cfg.tasksDir)) : fs.realpathSync(path.resolve(cfg.tasksDir));
+    return rp + path.sep;
+  } catch { return path.resolve(cfg.tasksDir) + path.sep; }
+})();
 let targets = reg.tasks
   .filter((t) => t.reportFile)
   .sort((a, b) => String(b.finishedAt || b.createdAt || "").localeCompare(String(a.finishedAt || a.createdAt || "")));
@@ -59,8 +64,14 @@ console.log(`${yes ? "将删除" : "候选（dry-run）"} ${targets.length} 份�
 let removed = 0, skipped = 0;
 for (const t of targets) {
   const abs = path.resolve(t.reportFile);
-  const inside = abs.toLowerCase().startsWith(tasksDir.toLowerCase());
-  console.log(`  - ${t.taskId}  ${t.phase || "-"}  ${t.finishedAt || t.createdAt || "-"}  ${inside ? abs : "(越界路径，跳过)"}`);
+  let real = null, isFile = false;
+  try {
+    real = fs.realpathSync.native ? fs.realpathSync.native(abs) : fs.realpathSync(abs);
+    isFile = fs.statSync(real).isFile();
+  } catch { real = null; }
+  // 符号链接解析后再做前缀比较，且必须带路径分隔符（DS 评审 BLOCKER B2）
+  const inside = !!real && isFile && real.toLowerCase().startsWith(tasksReal.toLowerCase());
+  console.log(`  - ${t.taskId}  ${t.phase || "-"}  ${t.finishedAt || t.createdAt || "-"}  ${inside ? real : "(越界/非文件，跳过)"}`);
   if (!inside) { skipped++; continue; }
   if (yes) {
     try { if (fs.existsSync(abs)) fs.rmSync(abs, { force: true }); } catch (e) { console.error(`    删除失败: ${e.message}`); skipped++; continue; }

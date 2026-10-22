@@ -95,9 +95,10 @@ for (const t of list.result.tools) {
 }
 
 const rl = await request("resources/list", {});
-record("S4 resources/list：结构合法（可能为空，truncated 显式）", () => {
+record("S4 resources/list：结构合法（可能为空，_meta.truncated 显式）", () => {
   if (!Array.isArray(rl.result.resources)) throw new Error("缺 resources 数组");
-  if (typeof rl.result.truncated !== "boolean") throw new Error("缺 truncated 标记");
+  if (typeof rl.result._meta?.truncated !== "boolean") throw new Error("缺 _meta.truncated 标记");
+  if (rl.result.truncated !== undefined) throw new Error("truncated 不应在顶层（应放 _meta）");
 });
 
 const rr = await request("resources/read", { uri: "agent-link://report/insp-proj/none" });

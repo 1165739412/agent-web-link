@@ -79,7 +79,7 @@ npm run browser -- --port 9222 --url https://chat.deepseek.com/
 
 ## 6. MCP：`configErrorCount` 现在可诊断
 
-`agent_link_list_projects` 现在返回 `configErrors: [{ project, message }]`，其中 `message` 已**脱敏**（绝对路径替换为 `<path>`）。定位到具体项目后，查看服务端 stderr 日志获取完整原因。
+`agent_link_list_projects` 现在返回 `configErrors: [{ project, code }]`，只给**结构化错误码**（如 `CONFIG_MISSING`、`PROJECT_ROOT_INVALID`、`DUPLICATE_NAME`），不回传原始 message（避免路径/用户名/主机名泄露）。定位到具体项目后，查看服务端 stderr 日志获取完整原因。
 
 资源列表（`resources/list`）的 `description` 现在带任务摘要（前 80 字），便于辨认 `agent-link://report/...` 到底是哪个任务。
 

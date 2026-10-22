@@ -97,6 +97,24 @@ record("R10 护栏：上次 SENDING 阻断", () => {
   assert.ok(/SENDING/.test(g.reason));
 });
 
+record("R10b 护栏：SENT/UNKNOWN（可能已发未确认）也阻断，并提示 --recover", () => {
+  for (const st of ["SENT", "UNKNOWN"]) {
+    const dir = path.join(TMP, `guard-${st}`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "relay_latest.json"), JSON.stringify({ runId: "r-" + st, status: st }));
+    const g = checkRelayGuard(dir);
+    assert.equal(g.ok, false, `${st} 应阻断`);
+    assert.match(g.reason, /--recover/);
+  }
+});
+
+record("R11b 护栏：RECOVERED 后放行", () => {
+  const dir = path.join(TMP, "guard-recovered");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "relay_latest.json"), JSON.stringify({ runId: "r3", status: "RECOVERED" }));
+  assert.equal(checkRelayGuard(dir).ok, true);
+});
+
 record("R11 护栏：已回复的上一轮放行", () => {
   const dir = path.join(TMP, "guard3");
   fs.mkdirSync(dir, { recursive: true });
