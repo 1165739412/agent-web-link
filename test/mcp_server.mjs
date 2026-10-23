@@ -12,7 +12,9 @@
 //   - 协商到 2025-06-18 及以上时，tools/call 额外返回 structuredContent（同时保留 text 兼容）；
 //   - 传输: 换行分隔的 JSON-RPC 2.0（stdout 只输出协议消息，日志一律走 stderr）。
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createTaskService, DEFAULT_PROJECTS_FILE, DEFAULT_TOKEN_FILE } from "./local_service.mjs";
 
@@ -224,6 +226,75 @@ export const TOOLS = [
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
+  {
+    name: "agent_link_browser_open",
+    title: "启动调试浏览器并打开网页",
+    description: "启动带远程调试端口（默认 9222）的 Chromium（自动探测 Chrome/Edge/Chromium）并打开 DeepSeek/ChatGPT 或指定 URL。登录由用户在页面内手动完成；本工具不处理账号/验证码。返回 CDP 地址与就绪提示，供后续发送前确认。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        backend: { type: "string", enum: ["deepseek", "chatgpt"], description: "默认打开的网站（默认 deepseek）" },
+        url: { type: "string", description: "覆盖要打开的 URL（可选）" },
+        port: { type: "integer", minimum: 1, maximum: 65535, description: "CDP 端口（默认 9222）" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      required: ["ok", "cdpHost", "url"],
+      properties: {
+        ok: { type: "boolean" }, alreadyUp: { type: "boolean" }, cdpHost: { type: "string" },
+        url: { type: "string" }, openedTab: { type: "boolean" }, hint: { type: "string" },
+      },
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: "agent_link_browser_status",
+    title: "诊断浏览器调试通道",
+    description: "只读诊断当前浏览器调试通道：CDP 是否可达、有无聊天页、指定会话是否打开、登录/输入框是否就绪。不发送、不操作，供发送前确认与失败排查。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        backend: { type: "string", enum: ["deepseek", "chatgpt"], description: "仅检查该后端的聊天页（可选）" },
+        conv: { type: "string", description: "检查是否打开了包含该会话 ID 的标签页（可选）" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      required: ["cdp", "chatPages", "convFound", "hints"],
+      properties: {
+        cdp: { type: "object" }, chatPages: { type: "array", items: { type: "string" } },
+        convFound: { type: "boolean" }, hints: { type: "array", items: { type: "string" } }, ready: { type: "boolean" },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "agent_link_send_message",
+    title: "向 DeepSeek/ChatGPT 发送消息并读回",
+    description: "通过本机已登录的聊天网页（DeepSeek/ChatGPT）发送一条消息并读回最新回复。要求浏览器已以 9222 调试端口运行且目标网页已登录。失败返回可读原因（hint，含启动/登录/网络建议）。绝不自动重发。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: { type: "string", minLength: 1, maxLength: 20000, description: "要发送的消息内容" },
+        backend: { type: "string", enum: ["deepseek", "chatgpt", "auto"], description: "目标后端（默认 auto：按配置/打开的页面自动选择）" },
+        conv: { type: "string", description: "定向到包含该会话 ID 的标签页（可选）" },
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      required: ["ok", "replyText", "targetUrl", "backend"],
+      properties: {
+        ok: { type: "boolean" }, replyText: { type: "string" }, targetUrl: { type: "string" },
+        backend: { type: "string" }, reason: { type: "string" }, hint: { type: "string" },
+      },
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
 ];
 
 // ---- JSON Schema 校验（覆盖本服务器所需子集）----
@@ -394,7 +465,45 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
       else if (name === "agent_link_list_projects") res = service.listProjects();
       else if (name === "agent_link_list_tasks") res = service.listTasks({ project: args.project, phase: args.phase || null, limit: args.limit ?? 20 });
       else if (name === "agent_link_list_reports") res = service.listReports({ project: args.project, limit: args.limit ?? 20 });
-      else res = service.submitResult({
+      else if (name === "agent_link_browser_open") {
+        const cliArgs = [path.join(__dirname, "browser_launcher.mjs")];
+        if (args.backend) cliArgs.push("--backend", args.backend);
+        if (args.url) cliArgs.push("--url", args.url);
+        if (args.port) cliArgs.push("--port", String(args.port));
+        let r;
+        try {
+          r = JSON.parse(execFileSync(process.execPath, cliArgs, { encoding: "utf8", timeout: 60000 }));
+        } catch (e) {
+          r = { ok: false, cdpHost: "http://127.0.0.1:9222", url: args.url || "https://chat.deepseek.com/", hint: `启动浏览器失败: ${e.message}` };
+        }
+        res = { ok: !!r.ok, cdpHost: r.cdpHost, url: r.url, alreadyUp: !!r.alreadyUp, openedTab: !!r.openedTab, hint: r.hint };
+      } else if (name === "agent_link_browser_status") {
+        const cliArgs = [path.join(__dirname, "relay.mjs"), "--diag"];
+        if (args.backend) cliArgs.push("--backend", args.backend);
+        if (args.conv) cliArgs.push("--conv", args.conv);
+        let d = { cdp: { up: false }, chatPages: [], convFound: false, hints: [] };
+        try {
+          const out = execFileSync(process.execPath, cliArgs, { encoding: "utf8", timeout: 30000 });
+          const m = out.match(/DIAG\s+(\{[\s\S]*\})$/);
+          if (m) d = JSON.parse(m[1]);
+        } catch (e) {
+          if (!d.hints || d.hints.length === 0) d.hints = [`诊断执行失败: ${e.message}`];
+        }
+        const ready = d.cdp && d.cdp.up && d.chatPages.length > 0 && (args.conv ? d.convFound : true)
+          && (d.hints || []).some((h) => h.includes("可以发送"));
+        res = { ok: true, cdp: d.cdp, chatPages: d.chatPages || [], convFound: !!d.convFound, hints: d.hints || [], ready };
+      } else if (name === "agent_link_send_message") {
+        const tmp = path.join(os.tmpdir(), `agent-link-relay-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
+        const cliArgs = [path.join(__dirname, "relay.mjs"), "--text", String(args.message)];
+        if (args.backend && args.backend !== "auto") cliArgs.push("--backend", args.backend);
+        if (args.conv) cliArgs.push("--conv", args.conv);
+        cliArgs.push("--json-out", tmp);
+        try { execFileSync(process.execPath, cliArgs, { encoding: "utf8", timeout: 120000 }); } catch {}
+        let r = { ok: false, replyText: "", targetUrl: "", backend: "", reason: "RELAY_FAILED", hint: "发送失败，请先运行 agent_link_browser_open 并登录" };
+        try { if (fs.existsSync(tmp)) r = JSON.parse(fs.readFileSync(tmp, "utf8")); } catch {}
+        try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+        res = { ok: !!r.ok, replyText: r.replyText || "", targetUrl: r.targetUrl || "", backend: r.backend || "", reason: r.reason || undefined, hint: r.hint || undefined };
+      } else res = service.submitResult({
         project: args.project, taskId: args.taskId, ok: args.ok,
         evidence: args.evidence, summary: args.summary ?? null, note: args.note ?? null,
         claimToken: args.claimToken ?? null,

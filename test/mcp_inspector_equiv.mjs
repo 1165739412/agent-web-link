@@ -75,17 +75,30 @@ function assertInit(res) {
 notify("notifications/initialized");
 
 const list = await request("tools/list", {});
-record("S2 tools/list：6 工具、每个含 inputSchema+outputSchema+annotations", () => {
-  if (list.result.tools.length !== 6) throw new Error(`工具数 ${list.result.tools.length} != 6`);
+record("S2 tools/list：9 工具、每个含 inputSchema+outputSchema+annotations", () => {
+  if (list.result.tools.length !== 9) throw new Error(`工具数 ${list.result.tools.length} != 9`);
   for (const t of list.result.tools) {
     if (!t.inputSchema || !t.outputSchema || !t.annotations) throw new Error(`${t.name} 缺 schema/注解`);
   }
 });
 
+const SAFE_ARGS = {
+  agent_link_submit_result: { project: "insp-proj", taskId: "no-such-task", ok: true, evidence: "inspector-equiv" },
+  agent_link_claim_next_task: { project: "insp-proj" },
+  agent_link_get_task: { project: "insp-proj", taskId: "no-such-task" },
+  agent_link_list_projects: {},
+  agent_link_list_tasks: { project: "insp-proj" },
+  agent_link_list_reports: { project: "insp-proj" },
+  agent_link_browser_status: {},
+  agent_link_send_message: { message: "inspector-ping" },
+};
+
 for (const t of list.result.tools) {
-  const args = t.name === "agent_link_submit_result" ? { project: "insp-proj", taskId: "no-such-task", ok: true, evidence: "inspector-equiv" }
-    : t.inputSchema.required?.includes("taskId") ? { project: "insp-proj", taskId: "no-such-task" }
-    : t.inputSchema.required?.includes("project") ? { project: "insp-proj" } : {};
+  if (t.name === "agent_link_browser_open") {
+    record(`S3 tools/call ${t.name}：跳过（会拉起浏览器，不在自动套件触发）`, () => {});
+    continue;
+  }
+  const args = SAFE_ARGS[t.name] || {};
   const r = await callTool(t.name, args);
   record(`S3 tools/call ${t.name}：返回 content[0].text 为 JSON`, () => {
     if (r.error) throw new Error("协议错误: " + r.error.message);

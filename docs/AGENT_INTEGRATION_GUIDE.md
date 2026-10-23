@@ -57,8 +57,9 @@
 
 ### 步骤 2：让宿主发现并读取真实工具 schema
 
-对 MCP 服务发送 JSON-RPC `tools/list`（stdio，换行分隔 JSON），即可获得**真实 schema**。当前共 6 个工具：
+对 MCP 服务发送 JSON-RPC `tools/list`（stdio，换行分隔 JSON），即可获得**真实 schema**。当前共 9 个工具（6 任务 + 3 浏览器）：
 
+**任务类（6）**
 - `agent_link_list_projects`（发现项目与健康状态，只读）
 - `agent_link_list_tasks`（按项目列任务，只读，可按 phase 过滤）
 - `agent_link_list_reports`（按项目列已产出报告，只读，含摘要）
@@ -66,8 +67,13 @@
 - `agent_link_get_task`
 - `agent_link_submit_result`
 
+**浏览器类（3，本地自用，驱动已登录的网页 LLM）**
+- `agent_link_browser_open`（启动带 9222 调试端口的 Chromium 并打开 DeepSeek/ChatGPT；登录由用户手动完成）
+- `agent_link_browser_status`（只读诊断通道：CDP 可达性/聊天页/会话/就绪）
+- `agent_link_send_message`（向已登录的 DeepSeek/ChatGPT 发送消息并读回回复；失败给可读原因，绝不自动重发）
+
 > **兼容性提示（升级自 3 工具版本时必读）**：
-> 1. 工具数量从 3 → 6，若宿主/脚本对 `tools/list` 数量做硬断言需要同步更新；
+> 1. 工具数量从 3 → 6 → 9，若宿主/脚本对 `tools/list` 数量做硬断言需要同步更新；
 > 2. 服务器现在**强制校验工具入参**（按 inputSchema）：缺必填、类型不符、未知参数一律返回
 >    JSON-RPC `-32602`，不再透传给服务层；
 > 3. 服务器强制**生命周期状态机**：`initialize` 必须是首个请求，初始化完成前除 `ping` 外的请求
@@ -322,6 +328,26 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 - **清理**：MCP 不提供删除工具（破坏性操作不进协议）。用 `npm run cleanup:reports -- --project <name> --before <ISO> [--keep N] [--yes]`，默认 dry-run。
 - **失败**：`UNKNOWN_PROJECT` / `PROJECT_CONFIG_INVALID` / `REGISTRY_CORRUPT`。
 
+### 3.7 浏览器工具（本地自用，驱动已登录的网页 LLM）
+
+这 3 个工具让接入 agent-link 的 agent 能**自动打开网页 / 操作浏览器 / 连 DeepSeek/ChatGPT**；登录（账号/验证码）仍由用户在页面内手动完成，工具不处理。
+
+> ⚠️ **安全边界**：浏览器工具会操作你本机已登录的聊天账号。仅在**可信本机**使用；任何接入 agent-link 的 agent 都能调用它们，等同于以你的身份收发消息。不要把本机 MCP 暴露给不可信环境。
+
+- **`agent_link_browser_open`**
+  - **用途**：启动带远程调试端口（默认 9222）的 Chromium（自动探测 Chrome/Edge/Chromium）并打开目标网页；若端口已就绪则只新开标签页。
+  - **参数**：`backend`（deepseek|chatgpt，默认 deepseek）、`url`（可选覆盖）、`port`（可选）。
+  - **返回**：`ok / cdpHost / url / alreadyUp / openedTab / hint`。**不等待登录**——启动后请在页面内登录，再调用 `send_message`。
+- **`agent_link_browser_status`**（只读，不发送）
+  - **用途**：诊断通道：CDP 是否可达、有无聊天页、指定会话是否打开、登录/输入框是否就绪。
+  - **参数**：`backend`（可选）、`conv`（可选，会话 ID）。
+  - **返回**：`cdp / chatPages / convFound / hints / ready`；`ready=true` 表示可发送。
+- **`agent_link_send_message`**
+  - **用途**：向已登录的 DeepSeek/ChatGPT 发送 `message` 并读回最新回复；失败返回可读 `reason`/`hint`（含“请启动浏览器/请登录/网络错误”等可执行建议）。
+  - **必填**：`message`。**可选**：`backend`（deepseek|chatgpt|auto，默认 auto）、`conv`（定向会话）。
+  - **返回**：`ok / replyText / targetUrl / backend / reason? / hint?`。**绝不自动重发**（安全失败原则）。
+  - 底层复用 `relay.mjs` 的护栏：单进程锁、同会话隔离、发送前网络预检、上下文耗尽识别——详见 AGENT_BACKENDS.md。
+
 ---
 
 ## 4. 项目 Agent 的标准工作流程
@@ -394,7 +420,7 @@ evidenceRequired: <需要的证据>
 你是「<项目名>」项目的执行 Agent。请遵守以下规则，独立完成接入与执行，不要依赖任何历史对话：
 
 1. 先阅读 <repo>/docs/AGENT_INTEGRATION_GUIDE.md，按其步骤工作。
-2. 通过 MCP tools/list 读取 agent-link 的**真实**工具 schema；只使用真实存在的工具（list_projects / list_tasks / list_reports / claim_next_task / get_task / submit_result）。不存在 create_task 工具。
+2. 通过 MCP tools/list 读取 agent-link 的**真实**工具 schema；任务类只使用真实存在的工具（list_projects / list_tasks / list_reports / claim_next_task / get_task / submit_result）。不存在 create_task 工具。（另有 3 个浏览器工具 browser_open/browser_status/send_message，仅在可信本机用于驱动已登录的 DeepSeek/ChatGPT，普通项目 Agent 不应使用。）
 3. 检查本项目是否已在 <repo>/test/projects.json 注册，且 projectRoot 指向真实目录；若未注册，先报告所需配置（不要猜路径）。
 4. 所有任务操作必须显式传 project="<项目名>"；核对返回的 task.project 与本项目一致；只在 projectRoot 内执行白名单操作（node_check / run_project_tests），绝不越界。
 5. 领取任务用 agent_link_claim_next_task；执行后用 agent_link_submit_result 提交**非空证据**；ok=true 只表示动作已执行，不代表目标完成。

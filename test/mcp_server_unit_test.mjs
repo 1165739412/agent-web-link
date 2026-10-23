@@ -56,17 +56,22 @@ record("V4 SUPPORTED 版本表降序且包含 2024-11-05", () => {
 });
 
 // ---- 工具清单与注解 ----
-record("V5 tools/list 含 6 个工具且 get_task 有 readOnly 注解", () => {
+record("V5 tools/list 含 9 个工具（6 任务工具 + 3 浏览器工具）且 get_task 有 readOnly 注解", () => {
   const r = call(service, { jsonrpc: "2.0", id: 2, method: "tools/list" });
   const names = r.result.tools.map((t) => t.name);
   assert.deepEqual(names, [
     "agent_link_list_projects", "agent_link_list_tasks", "agent_link_list_reports",
     "agent_link_claim_next_task", "agent_link_get_task", "agent_link_submit_result",
+    "agent_link_browser_open", "agent_link_browser_status", "agent_link_send_message",
   ]);
   const g = r.result.tools.find((t) => t.name === "agent_link_get_task");
   assert.equal(g.annotations.readOnlyHint, true);
   const s = r.result.tools.find((t) => t.name === "agent_link_submit_result");
   assert.equal(s.annotations.readOnlyHint, false);
+  // 浏览器发送工具必须声明 openWorldHint（会触达外部网页），且 send_message 强制 message
+  const sm = r.result.tools.find((t) => t.name === "agent_link_send_message");
+  assert.equal(sm.annotations.openWorldHint, true);
+  assert.deepEqual(sm.inputSchema.required, ["message"]);
 });
 
 // ---- 输入校验（规范 MUST）----
@@ -204,7 +209,12 @@ record("V25 全部工具声明 outputSchema；structuredContent 符合其 schema
   const st = { negotiatedVersion: "2025-06-18", initialized: true };
   call(service, { jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-06-18" } }, st);
   for (const t of TOOLS) assert.ok(t.outputSchema, `${t.name} 缺 outputSchema`);
-  for (const t of TOOLS.filter((x) => x.name !== "agent_link_claim_next_task" && x.name !== "agent_link_get_task" && x.name !== "agent_link_submit_result")) {
+  // 浏览器工具会拉起外部浏览器/relay，不在单元环境调用；其余工具验证 structuredContent 契约
+  const SKIP_CALL = new Set([
+    "agent_link_claim_next_task", "agent_link_get_task", "agent_link_submit_result",
+    "agent_link_browser_open", "agent_link_browser_status", "agent_link_send_message",
+  ]);
+  for (const t of TOOLS.filter((x) => !SKIP_CALL.has(x.name))) {
     const r = call(service, { jsonrpc: "2.0", id: 33, method: "tools/call", params: { name: t.name, arguments: t.inputSchema.required ? { project: "p1" } : {} } }, st);
     const sc = r.result.structuredContent;
     assert.ok(sc, `${t.name} 应有 structuredContent`);
