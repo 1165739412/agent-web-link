@@ -50,9 +50,9 @@ await step("S1 initialize 协商 2025-06-18", () => {
   assert.equal(r.result.protocolVersion, "2025-06-18");
   assert.equal(r.result.serverInfo.name, "agent-web-link");
 });
-await step("S2 tools/list 含 9 个工具（6 任务 + 3 浏览器）", () => {
+await step("S2 tools/list 含 10 个工具（6 任务 + 3 浏览器 + 1 只读读回）", () => {
   const r = call({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-  assert.equal(r.result.tools.length, 9);
+  assert.equal(r.result.tools.length, 10);
   assert.equal(r.result.tools.length, TOOLS.length);
 });
 await step("S3 list_projects 发现 selftest", () => {

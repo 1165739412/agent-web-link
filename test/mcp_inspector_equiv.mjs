@@ -76,8 +76,8 @@ function assertInit(res) {
 notify("notifications/initialized");
 
 const list = await request("tools/list", {});
-record("S2 tools/list：9 工具、每个含 inputSchema+outputSchema+annotations", () => {
-  if (list.result.tools.length !== 9) throw new Error(`工具数 ${list.result.tools.length} != 9`);
+record("S2 tools/list：10 工具、每个含 inputSchema+outputSchema+annotations", () => {
+  if (list.result.tools.length !== 10) throw new Error(`工具数 ${list.result.tools.length} != 10`);
   for (const t of list.result.tools) {
     if (!t.inputSchema || !t.outputSchema || !t.annotations) throw new Error(`${t.name} 缺 schema/注解`);
   }
@@ -97,6 +97,7 @@ const SAFE_ARGS = {
   agent_link_list_reports: { project: "insp-proj" },
   agent_link_browser_status: {},
   agent_link_send_message: { message: "inspector-ping", lane: INSP_LANE },
+  agent_link_read_reply: { lane: INSP_LANE },
 };
 
 for (const t of list.result.tools) {

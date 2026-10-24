@@ -56,13 +56,14 @@ record("V4 SUPPORTED 版本表降序且包含 2024-11-05", () => {
 });
 
 // ---- 工具清单与注解 ----
-record("V5 tools/list 含 9 个工具（6 任务工具 + 3 浏览器工具）且 get_task 有 readOnly 注解", () => {
+record("V5 tools/list 含 10 个工具（6 任务 + 3 浏览器 + 1 只读读回）且 get_task 有 readOnly 注解", () => {
   const r = call(service, { jsonrpc: "2.0", id: 2, method: "tools/list" });
   const names = r.result.tools.map((t) => t.name);
   assert.deepEqual(names, [
     "agent_link_list_projects", "agent_link_list_tasks", "agent_link_list_reports",
     "agent_link_claim_next_task", "agent_link_get_task", "agent_link_submit_result",
     "agent_link_browser_open", "agent_link_browser_status", "agent_link_send_message",
+    "agent_link_read_reply",
   ]);
   const g = r.result.tools.find((t) => t.name === "agent_link_get_task");
   assert.equal(g.annotations.readOnlyHint, true);
@@ -72,6 +73,12 @@ record("V5 tools/list 含 9 个工具（6 任务工具 + 3 浏览器工具）且
   const sm = r.result.tools.find((t) => t.name === "agent_link_send_message");
   assert.equal(sm.annotations.openWorldHint, true);
   assert.deepEqual(sm.inputSchema.required, ["message"]);
+  // 只读读回工具：只读 + 幂等（可反复调用）、无必填参数、不触达外部副作用
+  const rr = r.result.tools.find((t) => t.name === "agent_link_read_reply");
+  assert.equal(rr.annotations.readOnlyHint, true);
+  assert.equal(rr.annotations.idempotentHint, true);
+  assert.equal(rr.annotations.openWorldHint, false);
+  assert.ok(!rr.inputSchema.required || rr.inputSchema.required.length === 0, "read_reply 不应有必填参数");
 });
 
 // ---- 输入校验（规范 MUST）----
@@ -213,6 +220,7 @@ record("V25 全部工具声明 outputSchema；structuredContent 符合其 schema
   const SKIP_CALL = new Set([
     "agent_link_claim_next_task", "agent_link_get_task", "agent_link_submit_result",
     "agent_link_browser_open", "agent_link_browser_status", "agent_link_send_message",
+    "agent_link_read_reply",
   ]);
   for (const t of TOOLS.filter((x) => !SKIP_CALL.has(x.name))) {
     const r = call(service, { jsonrpc: "2.0", id: 33, method: "tools/call", params: { name: t.name, arguments: t.inputSchema.required ? { project: "p1" } : {} } }, st);
@@ -317,15 +325,16 @@ record("V35 浏览器工具 lane 参数：非法 ID 在协议层拒绝（-32602�
   const st = { negotiatedVersion: "2024-11-05", initialized: true };
   const bad = ["../evil", "..", "a/b", "a\\b", "-x", "x".repeat(33), "a.b", "UP PER"];
   for (const v of bad) {
-    for (const name of ["agent_link_browser_open", "agent_link_browser_status", "agent_link_send_message"]) {
+    for (const name of ["agent_link_browser_open", "agent_link_browser_status", "agent_link_send_message", "agent_link_read_reply"]) {
       const args = name === "agent_link_send_message" ? { message: "x", lane: v } : { lane: v };
       const r = call(service, { jsonrpc: "2.0", id: 60, method: "tools/call", params: { name, arguments: args } }, st);
       assert.equal(r.error && r.error.code, -32602, `${name} lane=${JSON.stringify(v)} 应被 -32602 拒绝`);
     }
   }
   // 合法 lane 不得被 schema 层拒绝（仅验证不触发执行：这里只校验错误码不是 -32602）
+  const CHANNEL_TOOLS = ["agent_link_browser_open", "agent_link_browser_status", "agent_link_send_message", "agent_link_read_reply"];
   const tools = call(service, { jsonrpc: "2.0", id: 61, method: "tools/list" }, st).result.tools;
-  for (const t of tools.filter((x) => x.name.startsWith("agent_link_browser"))) {
+  for (const t of tools.filter((x) => CHANNEL_TOOLS.includes(x.name))) {
     assert.ok(t.inputSchema.properties.lane, `${t.name} 应声明 lane 参数`);
     assert.equal(t.inputSchema.properties.lane.pattern, "^[a-z0-9][a-z0-9_-]{0,31}$");
     assert.equal(t.inputSchema.additionalProperties, false);
@@ -333,12 +342,13 @@ record("V35 浏览器工具 lane 参数：非法 ID 在协议层拒绝（-32602�
 });
 record("V37 浏览器工具 project 参数：按项目派生通道，未创建时给可执行提示（不发子进程）", () => {
   const st = { negotiatedVersion: "2024-11-05", initialized: true };
+  const CHANNEL_TOOLS = ["agent_link_browser_open", "agent_link_browser_status", "agent_link_send_message", "agent_link_read_reply"];
   const tools = call(service, { jsonrpc: "2.0", id: 62, method: "tools/list" }, st).result.tools;
-  for (const t of tools.filter((x) => x.name.startsWith("agent_link_browser"))) {
+  for (const t of tools.filter((x) => CHANNEL_TOOLS.includes(x.name))) {
     assert.ok(t.inputSchema.properties.project, `${t.name} 应声明 project 参数`);
   }
-  // 三个浏览器工具都接受 project；status/send 用 create:false，未注册通道 → LANE_NOT_FOUND（可执行提示，非协议错误）
-  for (const name of ["agent_link_browser_status", "agent_link_send_message"]) {
+  // 只读类工具用 create:false，未注册通道 → LANE_NOT_FOUND（可执行提示，非协议错误）
+  for (const name of ["agent_link_browser_status", "agent_link_send_message", "agent_link_read_reply"]) {
     const args = name === "agent_link_send_message" ? { message: "x", project: "UT-NEVER-CREATED" } : { project: "UT-NEVER-CREATED" };
     const r = call(service, { jsonrpc: "2.0", id: 63, method: "tools/call", params: { name, arguments: args } }, st);
     assert.equal(r.error, undefined, `${name} 带 project 不应被协议层拒绝`);

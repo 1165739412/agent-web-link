@@ -95,7 +95,7 @@ function startMcp(projectsFile) {
 }
 
 // ---------- M1 握手与工具契约 ----------
-await record("M1 initialize + tools/list 真实握手，九个工具齐备（6 任务 + 3 浏览器）", async () => {
+await record("M1 initialize + tools/list 真实握手，十个工具齐备（6 任务 + 3 浏览器 + 1 只读读回）", async () => {
   const a = makeProject("m1", "proj-a");
   const mcp = startMcp(makeProjectsRegistry("m1", [a]));
   try {
@@ -108,7 +108,8 @@ await record("M1 initialize + tools/list 真实握手，九个工具齐备（6 �
     assert.deepEqual(names, [
       "agent_link_browser_open", "agent_link_browser_status", "agent_link_claim_next_task",
       "agent_link_get_task", "agent_link_list_projects", "agent_link_list_reports",
-      "agent_link_list_tasks", "agent_link_send_message", "agent_link_submit_result",
+      "agent_link_list_tasks", "agent_link_read_reply", "agent_link_send_message",
+      "agent_link_submit_result",
     ]);
     const get = tools.find((t) => t.name === "agent_link_get_task");
     assert.equal(get.annotations.readOnlyHint, true, "get_task 应标注只读");

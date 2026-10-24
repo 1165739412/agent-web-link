@@ -57,7 +57,7 @@
 
 ### 步骤 2：让宿主发现并读取真实工具 schema
 
-对 MCP 服务发送 JSON-RPC `tools/list`（stdio，换行分隔 JSON），即可获得**真实 schema**。当前共 9 个工具（6 任务 + 3 浏览器）：
+对 MCP 服务发送 JSON-RPC `tools/list`（stdio，换行分隔 JSON），即可获得**真实 schema**。当前共 10 个工具（6 任务 + 3 浏览器 + 1 只读读回）：
 
 **任务类（6）**
 - `agent_link_list_projects`（发现项目与健康状态，只读）
@@ -67,13 +67,14 @@
 - `agent_link_get_task`
 - `agent_link_submit_result`
 
-**浏览器类（3，本地自用，驱动已登录的网页 LLM）**
-- `agent_link_browser_open`（启动带 9222 调试端口的 Chromium 并打开 DeepSeek/ChatGPT；登录由用户手动完成）
+**浏览器类（4，本地自用，驱动已登录的网页 LLM）**
+- `agent_link_browser_open`（启动带调试端口的 Chromium 并打开 DeepSeek/ChatGPT；登录由用户手动完成）
 - `agent_link_browser_status`（只读诊断通道：CDP 可达性/聊天页/会话/就绪）
 - `agent_link_send_message`（向已登录的 DeepSeek/ChatGPT 发送消息并读回回复；失败给可读原因，绝不自动重发）
+- `agent_link_read_reply`（只读读回目标会话最后一条回复，不发送/不输入/可反复调用；用于读回被宿主超时切断后的恢复）
 
 > **兼容性提示（升级自 3 工具版本时必读）**：
-> 1. 工具数量从 3 → 6 → 9，若宿主/脚本对 `tools/list` 数量做硬断言需要同步更新；
+> 1. 工具数量从 3 → 6 → 9 → 10，若宿主/脚本对 `tools/list` 数量做硬断言需要同步更新；
 > 2. 服务器现在**强制校验工具入参**（按 inputSchema）：缺必填、类型不符、未知参数一律返回
 >    JSON-RPC `-32602`，不再透传给服务层；
 > 3. 服务器强制**生命周期状态机**：`initialize` 必须是首个请求，初始化完成前除 `ping` 外的请求
@@ -330,7 +331,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 
 ### 3.7 浏览器工具（本地自用，驱动已登录的网页 LLM）
 
-这 3 个工具让接入 agent-link 的 agent 能**自动打开网页 / 操作浏览器 / 连 DeepSeek/ChatGPT**；登录（账号/验证码）仍由用户在页面内手动完成，工具不处理。
+这 4 个工具让接入 agent-link 的 agent 能**自动打开网页 / 操作浏览器 / 连 DeepSeek/ChatGPT**；登录（账号/验证码）仍由用户在页面内手动完成，工具不处理。
 
 > ⚠️ **安全边界**：浏览器工具会操作你本机已登录的聊天账号。仅在**可信本机**使用；任何接入 agent-link 的 agent 都能调用它们，等同于以你的身份收发消息。不要把本机 MCP 暴露给不可信环境。
 
@@ -347,6 +348,16 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
   - **必填**：`message`。**可选**：`backend`（deepseek|chatgpt|auto，默认 auto）、`conv`（定向会话）、`project`（推荐）、`lane`（二选一，默认 default）。
   - **返回**：`ok / replyText / targetUrl / backend / lane / reason? / hint?`。**绝不自动重发**（安全失败原则）。
   - 底层复用 `relay.mjs` 的护栏：单进程锁、同会话隔离、发送前网络预检、上下文耗尽识别——详见 AGENT_BACKENDS.md。
+- **`agent_link_read_reply`**（只读，不发送）
+  - **用途**：读取目标会话**最后一条助手回复**，不输入、不点击、不导航，可反复调用。
+    专为「消息已发出、但读回被宿主工具超时（常见 30s）切断」的恢复场景——DeepSeek/ChatGPT 生成长评审常需 1–3 分钟，
+    超过宿主单次调用上限；此时**绝不能重发**（会发出重复消息），改用本工具把已生成的回复读回来。
+  - **参数**：`backend`（可选）、`conv`（可选，定向会话）、`project` / `lane`（定位通道，与发送时一致）、
+    `keepPending`（布尔，默认 false）。
+  - **返回**：`ok / replyText / targetUrl / convId / backend / replyId / lastUserText / assistantCount / clearedPending / lane / reason? / hint?`。
+    `lastUserText` 是页面里最后一条用户消息，供你**自行确认回复归属**（无指纹校验）。
+  - **默认会清除匹配的待确认记录**（`SENDING/SENT/UNKNOWN`），使后续发送不再被护栏阻断；
+    仅清除"目标会话与本次读取一致"的记录，且**有发送正在进行时绝不清除**。传 `keepPending: true` 可保留。
 
 #### 多项目并行：`project` / `lane`（浏览器通道）
 
@@ -440,7 +451,7 @@ evidenceRequired: <需要的证据>
 你是「<项目名>」项目的执行 Agent。请遵守以下规则，独立完成接入与执行，不要依赖任何历史对话：
 
 1. 先阅读 <repo>/docs/AGENT_INTEGRATION_GUIDE.md，按其步骤工作。
-2. 通过 MCP tools/list 读取 agent-link 的**真实**工具 schema；任务类只使用真实存在的工具（list_projects / list_tasks / list_reports / claim_next_task / get_task / submit_result）。不存在 create_task 工具。（另有 3 个浏览器工具 browser_open/browser_status/send_message，仅在可信本机用于驱动已登录的 DeepSeek/ChatGPT，普通项目 Agent 不应使用。）
+2. 通过 MCP tools/list 读取 agent-link 的**真实**工具 schema；任务类只使用真实存在的工具（list_projects / list_tasks / list_reports / claim_next_task / get_task / submit_result）。不存在 create_task 工具。（另有 4 个浏览器工具 browser_open/browser_status/send_message/read_reply，仅在可信本机用于驱动已登录的 DeepSeek/ChatGPT，普通项目 Agent 不应使用。）
 3. 检查本项目是否已在 <repo>/test/projects.json 注册，且 projectRoot 指向真实目录；若未注册，先报告所需配置（不要猜路径）。
 4. 所有任务操作必须显式传 project="<项目名>"；核对返回的 task.project 与本项目一致；只在 projectRoot 内执行白名单操作（node_check / run_project_tests），绝不越界。
 5. 领取任务用 agent_link_claim_next_task；执行后用 agent_link_submit_result 提交**非空证据**；ok=true 只表示动作已执行，不代表目标完成。

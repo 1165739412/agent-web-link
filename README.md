@@ -41,7 +41,7 @@
 - **阶段（phase）**：`NEW / QUEUED / RUNNING / REPORTED / FAILED / BLOCKED / REPORT_UNKNOWN`。
 - **报告（report）**：执行结果 + 可核验证据（evidence）。`ok=true` 只代表「动作已执行且有证据（`ACTIONS_DONE`）」，**不代表任务目标完成**——是否完成由人类/调度层判断。
 
-## MCP 服务（9 个工具）
+## MCP 服务（10 个工具）
 
 **任务类（6 个）**
 
@@ -54,13 +54,14 @@
 | `agent_link_get_task` | ✅ | 查询任务状态 |
 | `agent_link_submit_result` | ❌ | 提交结果与证据（必填 `evidence`） |
 
-**浏览器类（3 个，本地自用，驱动已登录的网页 LLM）**
+**浏览器类（4 个，本地自用，驱动已登录的网页 LLM）**
 
 | 工具 | 只读 | 作用 |
 |---|---|---|
 | `agent_link_browser_open` | ❌ | 启动带调试端口的 Chromium（自动探测 Chrome/Edge）并打开 DeepSeek/ChatGPT；**登录由用户在页面内手动完成** |
 | `agent_link_browser_status` | ✅ | 只读诊断通道：CDP 是否可达、有无聊天页、会话是否打开、是否就绪（不发送） |
 | `agent_link_send_message` | ❌ | 向已登录的 DeepSeek/ChatGPT 发送消息并读回最新回复；失败给可读原因；绝不自动重发 |
+| `agent_link_read_reply` | ✅ | **只读读回**目标会话最后一条回复（不发送/不输入/可反复调用）。用于「消息已发出、但读回被宿主超时切断」的恢复——此时绝不能重发 |
 
 > 浏览器类工具会操作你本机已登录的聊天账号，仅在**可信本机**启用；任何接入 agent-link 的 agent 都能调用它们，等同于以你的身份收发消息。
 
@@ -90,6 +91,18 @@
 - `lane` 名仅允许小写字母/数字/`_`/`-`（1–32 字符，不以 `-` 开头），非法值在协议层直接 `-32602`，不会拼出路径。
 - 私有通道（非 `default`）只会附着于**本通道自己拉起的浏览器**；端口被别的程序占用时返回 `PORT_OCCUPIED` 并自动释放该通道注册，不会悄悄连上别人的窗口。
 - 上限 16 个通道（端口 9223–9238）；查看当前分配：`node test/browser_lanes.mjs`。
+
+### 读回被宿主超时切断怎么办
+
+DeepSeek/ChatGPT 生成长评审常需 1–3 分钟，而很多 MCP 宿主的单次工具调用超时是 30 秒——**发送成功了，读回却被切断**。此时：
+
+1. **绝不重发**（会发出重复消息）；
+2. 调用 `agent_link_read_reply`（只读，可反复调用）把已生成的回复读回来；
+3. 它返回 `lastUserText` 供你确认回复归属，并默认清除卡住后续发送的待确认记录（`keepPending: true` 可保留）。
+
+```jsonc
+{ "name": "agent_link_read_reply", "arguments": { "project": "proj-a" } }
+```
 
 - 协议：stdio + JSON-RPC 2.0（换行分隔）。
 - 生命周期：先 `initialize`（含 `instructions`）→ 客户端回 `notifications/initialized` → 才可调用工具。
@@ -188,7 +201,7 @@ npm run diag            # 诊断 CDP / 标签页 / 登录就绪状态（不发�
 
 It provides a neutral task hub with explicit phases (`NEW → RUNNING → REPORTED/FAILED`), per-project isolation, MCP/HTTP intake for agents, and CDP-based relay to web LLMs for human decisions. Every send carries a delivery receipt (runId / idempotent dedupe / reconciliation) to prevent duplicate or fake sends.
 
-- **MCP server**: 9 tools (6 task tools + 3 browser tools: `agent_link_browser_open` / `agent_link_browser_status` / `agent_link_send_message`); stdio + JSON-RPC 2.0; strict `inputSchema` validation; lifecycle state machine.
+- **MCP server**: 10 tools (6 task tools + 4 browser tools: `agent_link_browser_open` / `agent_link_browser_status` / `agent_link_send_message` / `agent_link_read_reply`); stdio + JSON-RPC 2.0; strict `inputSchema` validation; lifecycle state machine.
 - **Relay**: pluggable web adapters (ChatGPT, DeepSeek); user-chosen backend via `--backend` / `preferBackend`.
 - **Security**: loopback + `X-Auth-Token`; info-surface whitelist (no absolute paths / registry paths / error text in `list_projects`); post-send clearing verification; safe-fail on network errors.
 

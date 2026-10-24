@@ -25,9 +25,11 @@ export const RELAY_CONFIG_DEFAULT = path.join(__dirname, "relay.config.json");
 export const CDP_DEFAULT = "http://127.0.0.1:9222";
 
 const RELAY_USAGE = `用法: node test/relay.mjs [--report-file <f> | --text <s>] [--conv <id>] [--backend deepseek|chatgpt]
-       [--json-out <f>] [--config <f>] [--state-dir <dir>] [--cdp <url>] | --probe [--conv <id>] | --diag | --recover [--conv <id>] | --probe-url <url>
+       [--json-out <f>] [--config <f>] [--state-dir <dir>] [--cdp <url>] | --probe [--conv <id>] | --diag | --recover [--conv <id>] | --probe-url <url> | --read-latest [--conv <id>]
 
   --report-file/--text  发送内容（二选一）
+  --read-latest         只读读回目标会话最后一条助手回复（不发送/不输入/不导航）；用于"已发送但读回被切断"的恢复
+  --no-clear            配合 --read-latest：不清除匹配的待确认记录（默认清除，避免卡住后续发送）
   --conv <id>           只发送到包含该会话 ID 的标签页
   --backend <id>        首选后端（chatgpt/deepseek），优先于 config.preferBackend
   --probe               就绪探测（不带 --conv 走就绪门；带 --conv 与发送同路径）
@@ -774,9 +776,97 @@ export async function recover({ config, stateDir, convId = null, taskId = null, 
   return { ok: true, convId: finalConvId, targetUrl: page.url, replyText: last.text, backend: backend.id, recordFile: file, runId: newRunId, recoveredFrom: pending.runId, matchedBy };
 }
 
+// ---- 只读读回（DS 评审/宿主超时恢复）----
+// 场景：send_message 已把消息发出去，但调用方（如 MCP 宿主 30s 工具超时）在读回前就被切断，
+// 此时绝不能重发。本函数只附加到目标会话读最后一条助手回复，不输入、不点击、不导航。
+// 可选清除匹配的待确认记录（SENDING/SENT/UNKNOWN），使后续发送不再被护栏阻断。
+export function clearMatchingPending(stateDir, { convId, log = () => {} }) {
+  try {
+    // 有发送正在进行（锁被存活进程持有）时绝不清除，避免干扰在途发送
+    const lockPath = path.join(stateDir, "relay.lock");
+    if (fs.existsSync(lockPath)) {
+      try {
+        const o = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+        if (o && Number.isInteger(o.pid) && isPidAlive(o.pid)) return { cleared: false, reason: "SEND_IN_FLIGHT" };
+      } catch {}
+    }
+    const files = fs.readdirSync(stateDir).filter((f) => /^relay_.+\.json$/.test(f) && f !== "relay_latest.json");
+    const pending = [];
+    for (const f of files) {
+      try {
+        const rec = JSON.parse(fs.readFileSync(path.join(stateDir, f), "utf8"));
+        if (PENDING_SEND_STATES.includes(rec.status)) pending.push({ f, rec });
+      } catch {}
+    }
+    if (!pending.length) return { cleared: false, reason: "NO_PENDING" };
+    // 只清除"目标会话与本次读取一致"的记录；记录无 targetUrl 时，仅当唯一一条才清除（避免张冠李戴）
+    const match = (rec) => {
+      const u = String(rec.targetUrl || "");
+      if (!u) return pending.length === 1;
+      return convId ? u.includes(convId) : false;
+    };
+    const targets = pending.filter((p) => match(p.rec));
+    if (!targets.length) return { cleared: false, reason: "NO_MATCHING_PENDING", pending: pending.length };
+    if (targets.length > 1) return { cleared: false, reason: "PENDING_AMBIGUOUS", runIds: targets.map((t) => t.rec.runId) };
+    const t = targets[0];
+    t.rec.status = "RECOVERED";
+    t.rec.recoveredAt = new Date().toISOString();
+    t.rec.recoveredBy = "read-latest";
+    t.rec.unverifiedRecovery = true;   // 无指纹校验，由调用方依据 lastUserText 自行确认归属
+    writeFileAtomic(path.join(stateDir, t.f), JSON.stringify(t.rec, null, 2));
+    try {
+      fs.appendFileSync(path.join(stateDir, "audit.log"), JSON.stringify({ at: new Date().toISOString(), action: "read-latest-clear", runId: t.rec.runId, convId }) + "\n", "utf8");
+    } catch {}
+    log(`[RELAY] 只读读回已清除待确认记录 ${t.rec.runId}`);
+    return { cleared: true, runId: t.rec.runId, unverified: true };
+  } catch (e) { return { cleared: false, reason: "CLEAR_ERROR", error: e.message }; }
+}
+
+export async function readLatestReply(opts = {}) {
+  const { config, stateDir = null, preferBackend = null, preferConvId = null, clearPending = true, log = () => {} } = opts;
+  const cdp = config.cdpHost || CDP_DEFAULT;
+  const backends = resolveBackends(config);
+  const list = await (await fetch(cdp + "/json/list")).json();
+  const pages = (list || []).filter((t) => t && t.type === "page");
+  let page = null;
+  if (preferConvId) {
+    page = pages.find((t) => String(t.url || "").includes(preferConvId));
+    if (!page) return { ok: false, reason: "CONV_PAGE_NOT_FOUND", hint: explainReason("CONV_PAGE_NOT_FOUND", { cdpHost: cdp }) };
+  } else {
+    const pats = chatPageUrlPatterns(backends);
+    page = pages.find((t) => pats.some((rx) => rx.test(t.url || "")));
+    if (!page) return { ok: false, reason: "NO_CHATGPT_PAGE", hint: explainReason("NO_CHATGPT_PAGE", { cdpHost: cdp }) };
+  }
+  const backend = selectBackend(page.url, backends) || (preferBackend ? getBackend(preferBackend) : CG);
+  const c = await WSClient.connect(page.webSocketDebuggerUrl);
+  let snap;
+  try { snap = await readConversation(c, readSelOf(backend)); }
+  finally { await c.close("read-latest"); }
+
+  const assistants = (snap.msgs || []).filter((m) => m.role === "assistant");
+  const users = (snap.msgs || []).filter((m) => m.role === "user");
+  const last = assistants.length ? assistants[assistants.length - 1] : null;
+  const out = {
+    ok: true, readOnly: true,
+    targetUrl: snap.url || page.url,
+    convId: convIdOf(page.url, backend),
+    backend: backend.id,
+    replyText: String(snap.latestRegion || (last && last.text) || ""),
+    replyId: last ? (last.id || null) : null,
+    lastUserText: users.length ? String(users[users.length - 1].text || "").slice(0, 300) : null,
+    assistantCount: assistants.length,
+    clearedPending: null,
+  };
+  if (!out.replyText) {
+    return { ...out, ok: false, reason: "NO_REPLY_FOUND", hint: "未读到助手回复：可能仍在生成、页面未登录或不在会话页；请稍后重试（只读，可反复调用）" };
+  }
+  if (stateDir && clearPending) out.clearedPending = clearMatchingPending(stateDir, { convId: out.convId, log });
+  return out;
+}
+
 // ---- CLI ----
 function parseArgs(argv) {
-  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, cdp: null, probe: false, probeUrl: null, backend: null, diag: false, recover: false, recoverRun: null, recoverTask: null, recoverExpect: null, recoverUnverified: false, repairWal: false, force: false, help: false };
+  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, cdp: null, probe: false, probeUrl: null, backend: null, diag: false, recover: false, recoverRun: null, recoverTask: null, recoverExpect: null, recoverUnverified: false, repairWal: false, force: false, readLatest: false, noClear: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report-file") out.reportFile = argv[++i];
     else if (argv[i] === "--text") out.text = argv[++i];
@@ -791,6 +881,8 @@ function parseArgs(argv) {
     else if (argv[i] === "--diag" || argv[i] === "--health") out.diag = true;
     else if (argv[i] === "--recover") out.recover = true;
     else if (argv[i] === "--repair-wal") out.repairWal = true;
+    else if (argv[i] === "--read-latest") out.readLatest = true;
+    else if (argv[i] === "--no-clear") out.noClear = true;
     else if (argv[i] === "--force") out.force = true;
     else if (argv[i] === "--run-id") out.recoverRun = argv[++i];
     else if (argv[i] === "--task-id") out.recoverTask = argv[++i];
@@ -906,6 +998,16 @@ if (__isMain) {
       if (out.hint) console.error("PROBE_EXPLAIN " + out.hint);
     }
     process.exit(out.ok ? 0 : 1);
+  }
+
+  if (opts.readLatest) {
+    const r = await readLatestReply({
+      config, stateDir, preferBackend: opts.backend || null, preferConvId: opts.conv || null,
+      clearPending: !opts.noClear, log: (m) => console.error(m),
+    });
+    if (opts.jsonOut) writeJsonOut(opts.jsonOut, r);
+    console.log("READ_LATEST " + JSON.stringify(r, null, 2));
+    process.exit(r.ok ? 0 : 1);
   }
 
   const text = opts.text != null ? opts.text : (opts.reportFile ? fs.readFileSync(opts.reportFile, "utf8") : null);

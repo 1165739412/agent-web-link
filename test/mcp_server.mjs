@@ -50,6 +50,9 @@ const INSTRUCTIONS = [
   "   该通道内并发发送会返回 RELAY_BUSY（锁保护，防重复发送），需稍后重试。",
   "3) 若返回 LANE_NOT_FOUND，说明该项目通道尚未创建：请先调用 browser_open 带上同一个 project/lane，",
   "   启动后提醒用户完成登录，再重试发送。",
+  "4) 若 send_message 因宿主工具超时（常见 30s）被切断，而 DeepSeek/ChatGPT 生成长回复需要 1-3 分钟：",
+  "   **绝对不要重发**（会发出重复消息）。改用 agent_link_read_reply（只读，可反复调用）把已生成的回复读回来；",
+  "   它会返回 lastUserText 供你确认回复归属，并默认清除卡住后续发送的待确认记录。",
 ].join("\n");
 
 export const TOOLS = [
@@ -313,6 +316,33 @@ export const TOOLS = [
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
+  {
+    name: "agent_link_read_reply",
+    title: "只读读回最近一条回复",
+    description: "只读读取目标会话（DeepSeek/ChatGPT）最后一条助手回复，不发送、不输入、不导航。用于「消息已发出、但读回被宿主超时切断」的恢复——此时绝不能重发（重发会发出重复消息）。可反复调用，直到回复生成完毕。默认顺带清除匹配的待确认记录，使后续发送不再被护栏阻断（keepPending=true 可保留）。返回 lastUserText 供你自行确认回复归属。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        backend: { type: "string", enum: ["deepseek", "chatgpt"], description: "仅在多个后端都有聊天页时指定读哪一个（可选）" },
+        conv: { type: "string", description: "定向读取包含该会话 ID 的标签页（可选）" },
+        project: { type: "string", maxLength: 120, description: "你的项目名（与发送时一致），用于定位该项目的独立通道" },
+        lane: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,31}$", description: "浏览器通道（默认 default）" },
+        keepPending: { type: "boolean", description: "true=不清除待确认记录（默认 false：清除，避免卡住后续发送）" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      required: ["ok", "replyText", "targetUrl"],
+      properties: {
+        ok: { type: "boolean" }, replyText: { type: "string" }, targetUrl: { type: "string" },
+        convId: { type: "string" }, backend: { type: "string" }, replyId: { type: "string" },
+        lastUserText: { type: "string" }, assistantCount: { type: "integer" },
+        clearedPending: { type: "object" }, reason: { type: "string" }, hint: { type: "string" }, lane: { type: "string" },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
 ];
 
 // ---- JSON Schema 校验（覆盖本服务器所需子集）----
@@ -573,6 +603,33 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
             };
           }
           res = { ok: !!r.ok, lane: lane.lane, replyText: r.replyText || "", targetUrl: r.targetUrl || "", backend: r.backend || "", reason: r.reason || undefined, hint: r.hint || undefined };
+        }
+      } else if (name === "agent_link_read_reply") {
+        const laneRef = args.lane || (args.project ? laneIdFromProject(args.project) : null);
+        const lane = resolveLane(laneRef, { create: false });
+        if (!lane.ok) {
+          res = { ok: false, lane: String(laneRef || "default"), replyText: "", targetUrl: "", reason: lane.reason, hint: lane.hint };
+        } else {
+          const tmp = path.join(os.tmpdir(), `agent-link-read-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
+          const cliArgs = [path.join(__dirname, "relay.mjs"), "--read-latest", "--cdp", cdpHostOf(lane.port), "--state-dir", lane.stateDir, "--json-out", tmp];
+          if (args.backend) cliArgs.push("--backend", args.backend);
+          if (args.conv) cliArgs.push("--conv", args.conv);
+          if (args.keepPending) cliArgs.push("--no-clear");
+          let childErr = null;
+          try { execFileSync(process.execPath, cliArgs, { encoding: "utf8", timeout: 45000, stdio: ["ignore", "pipe", "pipe"] }); } catch (e) { childErr = e; }
+          let r = null;
+          try { if (fs.existsSync(tmp)) r = JSON.parse(fs.readFileSync(tmp, "utf8")); } catch (e) { childErr = childErr || { message: `读回结果解析失败: ${e.message}` }; }
+          try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+          if (!r || typeof r !== "object") {
+            const tail = childErr ? String(childErr.stderr || childErr.message || "").split("\n").filter(Boolean).slice(-2).join(" | ").slice(0, 200) : "";
+            r = { ok: false, replyText: "", targetUrl: "", reason: "READ_NO_RESULT", hint: `只读读回未取得结果${childErr && childErr.status ? `（子进程退出码 ${childErr.status}）` : ""}${tail ? `：${tail}` : ""}` };
+          }
+          res = {
+            ok: !!r.ok, lane: lane.lane, replyText: r.replyText || "", targetUrl: r.targetUrl || "",
+            convId: r.convId || undefined, backend: r.backend || undefined, replyId: r.replyId || undefined,
+            lastUserText: r.lastUserText || undefined, assistantCount: r.assistantCount,
+            clearedPending: r.clearedPending || undefined, reason: r.reason || undefined, hint: r.hint || undefined,
+          };
         }
       } else res = service.submitResult({
         project: args.project, taskId: args.taskId, ok: args.ok,

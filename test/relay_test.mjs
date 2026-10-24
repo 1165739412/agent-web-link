@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { loadRelayConfig, pickTargetPage, checkRelayGuard, defaultRelayConfig, acquireRelayLock, releaseRelayLock, repairWal, resolveQuarantine } from "./relay.mjs";
+import { loadRelayConfig, pickTargetPage, checkRelayGuard, defaultRelayConfig, acquireRelayLock, releaseRelayLock, repairWal, resolveQuarantine, clearMatchingPending } from "./relay.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TMP = path.join(__dirname, "tmp_relay");
@@ -346,6 +346,66 @@ record("R18 硬校验：未知 backends 条目 → ok:false", () => {
   const r = loadRelayConfig({ file: f });
   assert.equal(r.ok, false);
   assert.ok(/未知后端/.test(r.error));
+});
+
+// ---- 只读读回的待确认记录清除（安全关键：绝不清错、绝不干扰在途发送）----
+record("R19 clearMatchingPending：无待确认 → 不清除", () => {
+  const d = path.join(TMP, "clr-empty");
+  fs.mkdirSync(d, { recursive: true });
+  assert.deepEqual(clearMatchingPending(d, { convId: "c1" }), { cleared: false, reason: "NO_PENDING" });
+});
+record("R20 clearMatchingPending：会话不匹配 → 不清除（防张冠李戴）", () => {
+  const d = path.join(TMP, "clr-mismatch");
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, "relay_r-a.json"), JSON.stringify({ runId: "r-a", status: "SENT", targetUrl: "https://chatgpt.com/c/OTHER" }));
+  const r = clearMatchingPending(d, { convId: "c1" });
+  assert.equal(r.cleared, false);
+  assert.equal(r.reason, "NO_MATCHING_PENDING");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(d, "relay_r-a.json"), "utf8")).status, "SENT", "不匹配的记录必须保持原状");
+});
+record("R21 clearMatchingPending：会话匹配 → 标记 RECOVERED", () => {
+  const d = path.join(TMP, "clr-match");
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, "relay_r-b.json"), JSON.stringify({ runId: "r-b", status: "SENT", targetUrl: "https://chatgpt.com/c/CONV1" }));
+  const r = clearMatchingPending(d, { convId: "CONV1" });
+  assert.equal(r.cleared, true);
+  assert.equal(r.runId, "r-b");
+  assert.equal(r.unverified, true, "无指纹校验必须显式标注");
+  const rec = JSON.parse(fs.readFileSync(path.join(d, "relay_r-b.json"), "utf8"));
+  assert.equal(rec.status, "RECOVERED");
+  assert.equal(rec.recoveredBy, "read-latest");
+});
+record("R22 clearMatchingPending：多条匹配 → 拒绝（歧义不清）", () => {
+  const d = path.join(TMP, "clr-amb");
+  fs.mkdirSync(d, { recursive: true });
+  for (const id of ["r-c", "r-d"]) {
+    fs.writeFileSync(path.join(d, `relay_${id}.json`), JSON.stringify({ runId: id, status: "SENDING", targetUrl: "https://chatgpt.com/c/CONV1" }));
+  }
+  const r = clearMatchingPending(d, { convId: "CONV1" });
+  assert.equal(r.cleared, false);
+  assert.equal(r.reason, "PENDING_AMBIGUOUS");
+});
+record("R23 clearMatchingPending：锁被存活进程持有（发送中）→ 绝不清除", () => {
+  const d = path.join(TMP, "clr-inflight");
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, "relay_r-e.json"), JSON.stringify({ runId: "r-e", status: "SENT", targetUrl: "https://chatgpt.com/c/CONV1" }));
+  fs.writeFileSync(path.join(d, "relay.lock"), JSON.stringify({ pid: process.pid, token: "t", at: Date.now() }));
+  const r = clearMatchingPending(d, { convId: "CONV1" });
+  assert.equal(r.cleared, false);
+  assert.equal(r.reason, "SEND_IN_FLIGHT");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(d, "relay_r-e.json"), "utf8")).status, "SENT");
+});
+record("R24 clearMatchingPending：记录无 targetUrl 时仅唯一一条才清除", () => {
+  const d = path.join(TMP, "clr-notarget");
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, "relay_r-f.json"), JSON.stringify({ runId: "r-f", status: "UNKNOWN", targetUrl: "" }));
+  assert.equal(clearMatchingPending(d, { convId: null }).cleared, true, "唯一一条且无目标 → 可清除");
+  const d2 = path.join(TMP, "clr-notarget2");
+  fs.mkdirSync(d2, { recursive: true });
+  for (const id of ["r-g", "r-h"]) {
+    fs.writeFileSync(path.join(d2, `relay_${id}.json`), JSON.stringify({ runId: id, status: "UNKNOWN", targetUrl: "" }));
+  }
+  assert.equal(clearMatchingPending(d2, { convId: null }).cleared, false, "多条且无目标 → 拒绝");
 });
 
 console.log(results.join("\n"));
