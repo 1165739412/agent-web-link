@@ -340,9 +340,14 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
   - **参数**：`backend`（deepseek|chatgpt，默认 deepseek）、`url`（可选覆盖）、`project`（推荐）、`lane`（二选一，默认 default）、`port`（一般不传）。
   - **返回**：`ok / cdpHost / url / alreadyUp / openedTab / attached / lane / reason? / hint`。**不等待登录**——启动后请在页面内登录，再调用 `send_message`。
 - **`agent_link_browser_status`**（只读，不发送）
-  - **用途**：诊断通道：CDP 是否可达、有无聊天页、指定会话是否打开、登录/输入框是否就绪。
+  - **用途**：诊断通道：CDP 是否可达、**是否已登录**、有无聊天页、指定会话是否打开、输入框是否就绪。
   - **参数**：`backend`（可选）、`conv`（可选，会话 ID）、`project`（可选）、`lane`（可选）。
-  - **返回**：`cdp / chatPages / convFound / hints / ready / lane / reason? / hint`；`ready=true` 表示可发送。
+  - **返回**：`cdp / chatPages / convFound / hints / ready / loggedIn / lane / reason? / hint`；`ready=true` 表示可发送。
+  - **登录态用真实 DOM 探针判定，不靠 URL 猜测**（重要，曾因此误判）：
+    - 未登录的 DeepSeek 首页**同样有输入框**，所以 `composer=true` ≠ 已登录；
+    - 已登录但**还没开新对话**时 URL 仍是裸域名（`https://chat.deepseek.com/`），所以"URL 里有没有 `/a/chat/s/`"也不能判断登录；
+    - 判定依据：无「登录/注册」按钮 **且**（侧边栏存在历史会话链接 或 首页出现「欢迎回来」）；
+    - `loggedIn=false` 时返回明确提示，指明要在该通道对应的浏览器窗口登录。
 - **`agent_link_send_message`**
   - **用途**：向已登录的 DeepSeek/ChatGPT 发送 `message` 并读回最新回复；失败返回可读 `reason`/`hint`（含“请启动浏览器/请登录/网络错误”等可执行建议）。
   - **必填**：`message`。**可选**：`backend`（deepseek|chatgpt|auto，默认 auto）、`conv`（定向会话）、`project`（推荐）、`lane`（二选一，默认 default）。

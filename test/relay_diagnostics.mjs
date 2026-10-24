@@ -4,7 +4,7 @@
 //   - 不臆测原因：每条 hint 对应一个可用命令或一次可人工验证的动作；
 //   - 供 relay --probe 与 send_to_ds 在失败时调用（诊断与发送解耦，绝不因诊断阻塞发送）。
 import { WSClient } from "./cdp_ws_client.mjs";
-import { isPageReady } from "./agent_backends.mjs";
+import { isPageReady, detectLoginState } from "./agent_backends.mjs";
 
 export const CDP_DEFAULT = "http://127.0.0.1:9222";
 
@@ -61,13 +61,16 @@ export async function listTabs(cdpHost = CDP_DEFAULT) {
   }
 }
 
-// 探测单个标签页的就绪度；异常安全返回，不抛。
+// 探测单个标签页的就绪度 + 登录态；异常安全返回，不抛。
+// 登录态必须单独探测：composer 存在 ≠ 已登录（DeepSeek 首页未登录也有输入框）。
 export async function probeTab(page, backend) {
   let c = null;
   try {
     c = await WSClient.connect(page.webSocketDebuggerUrl);
     const r = await isPageReady(c, backend);
-    return { ok: true, ...r };
+    let login = null;
+    try { login = await detectLoginState(c, backend); } catch (e) { login = { error: e && e.message ? e.message : String(e) }; }
+    return { ok: true, ...r, login };
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : String(e) };
   } finally {
@@ -109,15 +112,22 @@ export async function diagnose({ cdpHost = CDP_DEFAULT, backends = [], convId = 
 
   const target = convId ? tabs.pages.find((p) => String(p.url || "").includes(convId)) : chatPages[0];
   const b = backend || (patterns.find((x) => x.rx.test(target.url || "")) || {}).b || (backends || [])[0];
+  let loggedIn = null;
   if (target && b) {
     const pr = await probeTab(target, b);
     if (!pr.ok) hints.push(`探测目标页异常：${pr.error}`);
     else {
-      hints.push(`目标页 ${target.url} → composer=${!!pr.composer} limit=${!!pr.limit} loadErr=${!!pr.loadErr}`);
+      loggedIn = pr.login && pr.login.loggedIn === true;
+      const lh = pr.login && pr.login.historyLinks;
+      hints.push(`目标页 ${target.url} → composer=${!!pr.composer} limit=${!!pr.limit} loadErr=${!!pr.loadErr} loggedIn=${String(loggedIn)}${Number.isInteger(lh) ? ` historyLinks=${lh}` : ""}`);
+      if (loggedIn === false) {
+        hints.push("→ **未登录**：该页面有输入框但账号未登录（未登录的 DeepSeek 首页同样有输入框）。请在该浏览器窗口完成登录后重试");
+      }
       if (pr.limit) hints.push("→ 上下文已耗尽：请在网页新建对话后重试");
       else if (!pr.composer) hints.push("→ 未找到输入框：可能未登录或仍在加载，请人工确认后重试");
-      else hints.push("→ 页面就绪，可以发送");
+      else if (loggedIn !== false) hints.push("→ 页面就绪，可以发送");
+      else hints.push("→ 登录后即可发送（已登录但未开对话也属就绪，发送时会自动进入会话）");
     }
   }
-  return { cdp: info, chatPages: chatPages.map((p) => p.url), convFound, hints };
+  return { cdp: info, chatPages: chatPages.map((p) => p.url), convFound, loggedIn, hints };
 }

@@ -17,6 +17,7 @@ export const CHATGPT = {
   assistantIdAttr: "data-dil-message-id",
   regionMarker: "最新一条回复",
   convIdPattern: "c/([0-9a-fA-F-]{8,})",
+  historyPath: "/c/",            // 侧边栏历史会话链接路径（用于登录态判定）
   newConvUrl: "https://chatgpt.com/",
   loadErrPattern: "无法加载此 ChatGPT 对话",
   limitPatterns: [
@@ -46,6 +47,7 @@ export const DEEPSEEK = {
   assistantIdAttr: "", // DeepSeek 助手消息无稳定 id 属性 → 读取器回退为位置化 id（"a"+序号）
   regionMarker: "",
   convIdPattern: "s/([0-9a-fA-F-]{8,})",
+  historyPath: "/a/chat/s/",     // 侧边栏历史会话链接路径（用于登录态判定）
   newConvUrl: "https://chat.deepseek.com/",
   loadErrPattern: "",
   limitPatterns: [
@@ -151,6 +153,37 @@ export async function isPageReady(c, b) {
   const r = await c.send("Runtime.evaluate", { expression: expr, returnByValue: true });
   const v = JSON.parse(r.result.value);
   return { ready: !v.loadErr && !v.limit && !!v.composer, ...v };
+}
+
+// 登录态探测（只读）。
+// 为什么需要：DeepSeek 首页**未登录也有输入框**，所以 isPageReady 的 composer=true 不能代表已登录；
+// 登录了但还没开新对话时 URL 仍是裸域名，也不能靠 URL 里有没有 /a/chat/s/ 判断。
+// 判别依据（实测校准）：未登录 → 页面出现「登录/注册」按钮、侧边栏无历史会话链接；
+// 已登录 → 侧边栏出现历史会话链接（实测 100+ 条），或首页出现「欢迎回来」。
+export async function detectLoginState(c, b = CG) {
+  const expr = `(() => {
+    const t = (document.body && document.body.innerText) || "";
+    const label = (el) => ((el.innerText || "") + " " + (el.getAttribute ? (el.getAttribute("aria-label") || "") : "")).trim();
+    let loginPrompt = [];
+    try {
+      loginPrompt = [...document.querySelectorAll("button,a,div[role=button]")]
+        .filter((el) => /^(登录|注册|登录\\s*\\/\\s*注册|Sign in|Log in|Sign up)$/i.test(label(el)))
+        .map((el) => label(el).slice(0, 24));
+    } catch (e) {}
+    const path = ${JSON.stringify(b.historyPath || "/c/")};
+    let historyLinks = 0;
+    try {
+      historyLinks = [...document.querySelectorAll("a[href]")].filter((a) => String(a.getAttribute("href") || "").includes(path)).length;
+    } catch (e) {}
+    const welcomeBack = /欢迎回来|Welcome back/i.test(t.slice(0, 800));
+    return JSON.stringify({
+      loggedIn: loginPrompt.length === 0 && (historyLinks > 0 || welcomeBack),
+      loginPrompt, historyLinks, welcomeBack, url: location.href,
+    });
+  })()`;
+  const r = await c.send("Runtime.evaluate", { expression: expr, returnByValue: true });
+  if (r.exceptionDetails) throw new Error(`登录态探测异常: ${r.exceptionDetails.text}`);
+  return JSON.parse(r.result.value);
 }
 
 export async function readComposerText(c, b) {

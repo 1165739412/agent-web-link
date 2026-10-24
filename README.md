@@ -59,7 +59,7 @@
 | 工具 | 只读 | 作用 |
 |---|---|---|
 | `agent_link_browser_open` | ❌ | 启动带调试端口的 Chromium（自动探测 Chrome/Edge）并打开 DeepSeek/ChatGPT；**登录由用户在页面内手动完成** |
-| `agent_link_browser_status` | ✅ | 只读诊断通道：CDP 是否可达、有无聊天页、会话是否打开、是否就绪（不发送） |
+| `agent_link_browser_status` | ✅ | 只读诊断通道：CDP 是否可达、**是否已登录**（真实 DOM 探针）、有无聊天页、会话是否打开、是否就绪（不发送） |
 | `agent_link_send_message` | ❌ | 向已登录的 DeepSeek/ChatGPT 发送消息并读回最新回复；失败给可读原因；绝不自动重发 |
 | `agent_link_read_reply` | ✅ | **只读读回**目标会话最后一条回复（不发送/不输入/可反复调用）。用于「消息已发出、但读回被宿主超时切断」的恢复——此时绝不能重发 |
 

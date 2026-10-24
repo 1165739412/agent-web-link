@@ -285,7 +285,7 @@ export const TOOLS = [
       properties: {
         cdp: { type: "object" }, chatPages: { type: "array", items: { type: "string" } },
         convFound: { type: "boolean" }, hints: { type: "array", items: { type: "string" } }, ready: { type: "boolean" },
-        reason: { type: "string" }, lane: { type: "string" },
+        loggedIn: { type: "boolean" }, reason: { type: "string" }, lane: { type: "string" },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -577,7 +577,12 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
           }
           const ready = d.cdp && d.cdp.up && d.chatPages.length > 0 && (args.conv ? d.convFound : true)
             && (d.hints || []).some((h) => h.includes("可以发送"));
-          res = { ok: true, lane: lane.lane, cdp: d.cdp, chatPages: d.chatPages || [], convFound: !!d.convFound, hints: d.hints || [], ready };
+          // 登录态必须显式回传：composer 存在 ≠ 已登录（未登录首页同样有输入框），
+          // 否则调用方会误判"就绪"而发出去失败。
+          if (d.loggedIn === false) {
+            d.hints = [`未登录：该页面有输入框但账号未登录。请在这个通道对应的浏览器窗口完成登录（通道 ${lane.lane}，${cdpHostOf(lane.port)}）`, ...(d.hints || [])];
+          }
+          res = { ok: true, lane: lane.lane, cdp: d.cdp, chatPages: d.chatPages || [], convFound: !!d.convFound, hints: d.hints || [], ready, loggedIn: d.loggedIn };
         }
       } else if (name === "agent_link_send_message") {
         const laneRef = args.lane || (args.project ? laneIdFromProject(args.project) : null);
