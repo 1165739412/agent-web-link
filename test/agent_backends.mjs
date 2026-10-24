@@ -100,10 +100,13 @@ function readSelOf(b) {
 // 把 "/pattern/flags" 形式的模式串还原为 RegExp（JSON 注入后斜杠不再是定界符，需显式解析）
 const RE_PARSE_HELPER = `const toRe = (s) => { if (s.length > 1 && s[0] === "/") { const j = s.lastIndexOf("/"); if (j > 0) { try { return new RegExp(s.slice(1, j), s.slice(j + 1)); } catch (e) {} } } try { return new RegExp(s); } catch (e) { return null; } };`;
 
-// R-002 修复（DS 批次 8）：页面上下文损坏时，带 awaitPromise 的 Runtime.evaluate 会永久挂起
-// （实机证据：同步求值正常、异步求值永不返回），CDP 层 REQ_TIMEOUT 只会报 RequestTimeout。
-// 因此所有 awaitPromise 求值必须经本包装：Node 侧外部超时（默认 8s < REQ_TIMEOUT 20s），
-// 超时抛 EVAL_BUDGET_EXCEEDED，由调用方转为结构化失败而不是永久卡死。
+// R-002 修复（DS 批次 8，复查后分层预算）：页面上下文损坏时，带 awaitPromise 的
+// Runtime.evaluate 会永久挂起（实机证据：同步求值正常、异步求值永不返回），CDP 层
+// REQ_TIMEOUT 只会报 RequestTimeout。预算必须分层且留 margin（DS 复查第 1 条：
+// 三层相等会让"回显不匹配→echoed:false 优雅降级"路径永远走不到）：
+//   页面回显预算(5000) < 外部求值预算(8000) < REQ_TIMEOUT(20000)
+// 超外部预算抛 EVAL_BUDGET_EXCEEDED，由调用方转为结构化失败而不是永久卡死。
+export const PAGE_ECHO_BUDGET_MS = 5000;
 export const EVAL_BUDGET_MS = 8000;
 
 export async function evalWithBudget(c, expr, { awaitPromise = true, budgetMs = EVAL_BUDGET_MS } = {}) {
@@ -178,10 +181,10 @@ export async function typeIntoComposer(c, text, b) {
       document.execCommand("selectAll", false, null);
       document.execCommand("insertText", false, ${JSON.stringify(text)});
     }
-    // 页面内回显等待预算 80×100ms=8s，必须 < CDP REQ_TIMEOUT(20s)（R-002 不变量，
-    // 见文件头 evalWithBudget 注释）；超预算返回 echoed:false，由 relay 的
-    // 点击发送 + verifyClearAfterSend 兜底判定，绝不让 evaluate 撞 CDP 超时。
-    for (let i = 0; i < 80; i++) {
+    // 页面内回显等待预算 50×100ms=5s（PAGE_ECHO_BUDGET_MS），必须 < 外部预算 8s
+    // < CDP REQ_TIMEOUT 20s（R-002 分层不变量）；超页面预算返回 echoed:false，由 relay
+    // 的点击发送 + verifyClearAfterSend 兜底判定，绝不让 evaluate 撞 CDP/外部超时。
+    for (let i = 0; i < 50; i++) {
       await new Promise(r => setTimeout(r, 100));
       const raw = (isTa ? el.value : (el.innerText || el.textContent)) || "";
       const key = raw.replace(/\\s+/g, "");
@@ -197,7 +200,11 @@ export async function typeIntoComposer(c, text, b) {
   try {
     r = await evalWithBudget(c, expr);
   } catch (e) {
-    return { ok: false, err: "eval hang/budget: " + e.message + "（页面上下文可能损坏，建议换标签）" };
+    if (e.name === "EVAL_BUDGET_EXCEEDED") {
+      // 页面预算走满仍未回显：按回显不匹配降级（echoed:false），relay 兜底路径接管
+      return { ok: true, echoed: false, len: 0, degraded: true };
+    }
+    return { ok: false, err: "eval hang: " + e.message + "（页面上下文可能损坏，建议换标签）" };
   }
   if (r.exceptionDetails) return { ok: false, err: "type exception: " + r.exceptionDetails.text };
   return JSON.parse(r.result.value);
