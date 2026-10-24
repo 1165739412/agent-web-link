@@ -358,6 +358,7 @@ export function validateSchema(value, schema, path = "value") {
   if (types) {
     const ok = types.some((t) => {
       if (t === "number") return actual === "number" && Number.isFinite(value);
+      if (t === "integer") return actual === "number" && Number.isInteger(value);
       return actual === t;
     });
     if (!ok) { errors.push(`${path}: 类型应为 ${types.join("|")}，实际 ${actual}`); return errors; }
@@ -377,6 +378,7 @@ export function validateSchema(value, schema, path = "value") {
       if (value[r] === undefined || value[r] === null) errors.push(`${path}.${r}: 缺少必填字段`);
     }
     for (const [k, v] of Object.entries(value)) {
+      if (v === undefined) continue; // 显式赋 undefined 的可选字段不算存在，跳过校验（否则必触发类型错误）
       const ps = (schema.properties || {})[k];
       if (!ps) { if (schema.additionalProperties === false) errors.push(`${path}.${k}: 未知字段`); continue; }
       errors.push(...validateSchema(v, ps, `${path}.${k}`));
@@ -649,11 +651,14 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
     // structuredContent 必须符合该工具 outputSchema（DS 评审：契约闭合），不符则告警并省略。
     const result = { content: [{ type: "text", text }] };
     if (state.negotiatedVersion === "2025-06-18" && rest && typeof rest === "object" && !Array.isArray(rest)) {
-      const oErrs = tool.outputSchema ? validateSchema(rest, tool.outputSchema, "structuredContent") : [];
+      // 剔除显式赋 undefined 的可选字段：undefined 参与 schema 校验必失败（类型不符），
+      // 会导致 structuredContent 被省略、宿主报 "did not return structured content" 并丢弃内容
+      const compacted = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+      const oErrs = tool.outputSchema ? validateSchema(compacted, tool.outputSchema, "structuredContent") : [];
       if (oErrs.length) {
         log(`[MCP] structuredContent 不符合 ${name}.outputSchema: ${oErrs.join("; ")}`);
       } else {
-        result.structuredContent = rest;
+        result.structuredContent = compacted;
       }
     }
     if (res.ok) return { jsonrpc: "2.0", id, result };

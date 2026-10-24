@@ -26,6 +26,8 @@ const SUITES = [
   "context_limit_detect_test.mjs",  // 无 CDP 时显式 SKIP
   "selftest.mjs",                   // MCP 闭环干跑自检（不需要浏览器）
   "register_project_test.mjs",      // 项目自注册 CLI
+  "eval_budget_test.mjs",           // R-002：awaitPromise 求值外部超时（离线 mock）
+  "read_reply_schema_test.mjs",     // R-002：read_reply clearedPending 形态契约
 ];
 
 const argv = process.argv.slice(2);
