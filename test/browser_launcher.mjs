@@ -47,6 +47,8 @@ export async function openTab(cdpHost, u) {
 }
 
 // 返回结构化结果（供 MCP 工具直接使用），不直接打印。
+// opts.strict + opts.expectPid：私有通道（非 default）只允许附着于"本通道此前拉起的实例"，
+// 避免端口被别的浏览器/服务占用时悄悄连上别人的窗口（DS 评审 P0-2）。
 export async function launchBrowser(opts = {}) {
   const port = parseInt(opts.port ?? process.env.CDP_PORT ?? "9222", 10) || 9222;
   const cdpHost = `http://127.0.0.1:${port}`;
@@ -54,11 +56,19 @@ export async function launchBrowser(opts = {}) {
   const url = opts.url || (backend === "chatgpt" ? "https://chatgpt.com/" : "https://chat.deepseek.com/");
   const profile = opts.profile || process.env.AGENT_WEB_LINK_PROFILE || path.join(__dirname, "browser-profile");
   const timeoutMs = parseInt(opts.timeoutMs ?? "25000", 10) || 25000;
+  const strict = opts.strict === true;
+  const expectPid = Number.isInteger(opts.expectPid) ? opts.expectPid : null;
 
   if (await cdpUp(cdpHost)) {
+    if (strict && !(expectPid && isPidAlive(expectPid))) {
+      return {
+        ok: false, alreadyUp: true, reason: "PORT_OCCUPIED", cdpHost, url, port,
+        hint: `端口 ${port} 已被其他程序/浏览器占用，且不是本通道此前拉起的实例；私有通道不会附着到别人的浏览器。请换一个 lane 名，或先结束占用 ${port} 的程序。`,
+      };
+    }
     const opened = await openTab(cdpHost, url);
     return {
-      ok: true, alreadyUp: true, cdpHost, url, openedTab: opened,
+      ok: true, alreadyUp: true, cdpHost, url, openedTab: opened, attached: true,
       hint: opened ? `已打开新标签页 ${url}` : `无法自动开标签页，请手动打开 ${url}；请在页面完成登录后发送。`,
     };
   }
@@ -78,12 +88,13 @@ export async function launchBrowser(opts = {}) {
     url,
   ], { detached: true, stdio: "ignore" });
   child.unref();
+  const pid = Number.isInteger(child.pid) ? child.pid : null;
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await cdpUp(cdpHost)) {
       return {
-        ok: true, alreadyUp: false, cdpHost, url, profile,
+        ok: true, alreadyUp: false, cdpHost, url, profile, pid,
         hint: `已启动 ${exe} 并打开 ${url}；请在网页中登录后再发送。`,
       };
     }
@@ -93,6 +104,11 @@ export async function launchBrowser(opts = {}) {
     ok: false, alreadyUp: false, cdpHost, url,
     hint: `${timeoutMs}ms 内调试端口未就绪。常见原因：浏览器启动失败 / 端口被占用 / 需要管理员权限 / 安全软件拦截。`,
   };
+}
+
+export function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 }
 
 // CLI 模式：被 MCP 工具 agent_link_browser_open 以子进程调用，仅输出 JSON（供解析）。
@@ -107,6 +123,8 @@ if (__isMainBL) {
     port: get("--port", null),
     profile: get("--profile", null),
     timeoutMs: get("--timeout", "25000"),
+    strict: a.includes("--strict"),
+    expectPid: (() => { const i = a.indexOf("--expect-pid"); return i >= 0 && a[i + 1] ? Number(a[i + 1]) : null; })(),
   });
   process.stdout.write(JSON.stringify(r));
 }

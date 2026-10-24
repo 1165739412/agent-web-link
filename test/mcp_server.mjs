@@ -15,7 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { resolveLane, cdpHostOf } from "./browser_lanes.mjs";
+import { resolveLane, cdpHostOf, laneIdFromProject, markBrowserPid, releaseLane } from "./browser_lanes.mjs";
 import { fileURLToPath } from "node:url";
 import { createTaskService, DEFAULT_PROJECTS_FILE, DEFAULT_TOKEN_FILE } from "./local_service.mjs";
 
@@ -41,6 +41,15 @@ const INSTRUCTIONS = [
   "agent_link_get_task 查询状态，agent_link_submit_result 提交结果（必须附非空证据）。",
   "注意：ok=true 仅代表动作已执行并有证据（ACTIONS_DONE），不代表任务目标完成。",
   "限制：所有工具均为快速只读/登记操作，notifications/cancelled 对其不产生中断效果。",
+  "",
+  "浏览器工具（browser_open / browser_status / send_message）会操作本机已登录的 DeepSeek/ChatGPT，",
+  "登录只能由用户手动完成。多项目并行规则（重要）：",
+  "1) 每次调用浏览器工具时，请把你负责的项目名一起传进 project 参数（与任务工具用同一个项目名）；",
+  "   服务端会据此使用该项目的独立浏览器通道，多个项目即可并行收发，不会挤进同一个窗口。",
+  "2) 也可以显式传 lane 指定通道；两者不要同时传。两者都不传则使用共享主通道（default，端口 9222），",
+  "   该通道内并发发送会返回 RELAY_BUSY（锁保护，防重复发送），需稍后重试。",
+  "3) 若返回 LANE_NOT_FOUND，说明该项目通道尚未创建：请先调用 browser_open 带上同一个 project/lane，",
+  "   启动后提醒用户完成登录，再重试发送。",
 ].join("\n");
 
 export const TOOLS = [
@@ -238,6 +247,7 @@ export const TOOLS = [
         url: { type: "string", description: "覆盖要打开的 URL（可选）" },
         port: { type: "integer", minimum: 1, maximum: 65535, description: "显式覆盖 CDP 端口（默认取 lane 的端口；一般不需要传）" },
         lane: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,31}$", description: "浏览器通道（默认 default）。不同通道=独立浏览器实例（端口+登录 profile）+独立发送锁，可真正并行；同通道内仍串行。新通道首次需你手动登录一次。" },
+        project: { type: "string", maxLength: 120, description: "你的项目名。传了它就会自动使用该项目的独立通道（等价于按项目名派生 lane），多个项目即可并行而不挤同一窗口；不要与 lane 同时用。" },
       },
       additionalProperties: false,
     },
@@ -246,7 +256,8 @@ export const TOOLS = [
       required: ["ok", "cdpHost", "url"],
       properties: {
         ok: { type: "boolean" }, alreadyUp: { type: "boolean" }, cdpHost: { type: "string" },
-        url: { type: "string" }, openedTab: { type: "boolean" }, hint: { type: "string" }, lane: { type: "string" },
+        url: { type: "string" }, openedTab: { type: "boolean" }, attached: { type: "boolean" },
+        reason: { type: "string" }, hint: { type: "string" }, lane: { type: "string" },
       },
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -261,6 +272,7 @@ export const TOOLS = [
         backend: { type: "string", enum: ["deepseek", "chatgpt"], description: "仅检查该后端的聊天页（可选）" },
         conv: { type: "string", description: "检查是否打开了包含该会话 ID 的标签页（可选）" },
         lane: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,31}$", description: "浏览器通道（默认 default）。诊断该通道对应的浏览器实例。" },
+        project: { type: "string", maxLength: 120, description: "你的项目名。传了它就诊断该项目的独立通道（等价于按项目名派生 lane）。" },
       },
       additionalProperties: false,
     },
@@ -269,7 +281,8 @@ export const TOOLS = [
       required: ["cdp", "chatPages", "convFound", "hints"],
       properties: {
         cdp: { type: "object" }, chatPages: { type: "array", items: { type: "string" } },
-        convFound: { type: "boolean" }, hints: { type: "array", items: { type: "string" } }, ready: { type: "boolean" }, lane: { type: "string" },
+        convFound: { type: "boolean" }, hints: { type: "array", items: { type: "string" } }, ready: { type: "boolean" },
+        reason: { type: "string" }, lane: { type: "string" },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -285,6 +298,7 @@ export const TOOLS = [
         backend: { type: "string", enum: ["deepseek", "chatgpt", "auto"], description: "目标后端（默认 auto：按配置/打开的页面自动选择）" },
         conv: { type: "string", description: "定向到包含该会话 ID 的标签页（可选）" },
         lane: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,31}$", description: "浏览器通道（默认 default）。多项目并行时各用各的 lane：独立浏览器实例+独立发送锁，互不阻塞；同 lane 内并发会返回 RELAY_BUSY。" },
+        project: { type: "string", maxLength: 120, description: "你的项目名。传了它就自动使用该项目的独立通道（等价于按项目名派生 lane）；多个项目各自传入自己的 project，即可并行而不挤同一窗口。不要与 lane 同时用。" },
       },
       required: ["message"],
       additionalProperties: false,
@@ -471,40 +485,60 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
       else if (name === "agent_link_list_tasks") res = service.listTasks({ project: args.project, phase: args.phase || null, limit: args.limit ?? 20 });
       else if (name === "agent_link_list_reports") res = service.listReports({ project: args.project, limit: args.limit ?? 20 });
       else if (name === "agent_link_browser_open") {
-        const lane = resolveLane(args.lane);
+        // 通道选择：显式 lane 优先；否则按 project 派生（多项目场景下"不说也会"拿到独立通道）
+        const laneRef = args.lane || (args.project ? laneIdFromProject(args.project) : null);
+        const lane = resolveLane(laneRef);
         if (!lane.ok) {
-          res = { ok: false, lane: String(args.lane || "default"), cdpHost: "http://127.0.0.1:9222", url: args.url || "https://chat.deepseek.com/", alreadyUp: false, openedTab: false, reason: lane.reason, hint: lane.hint };
+          res = { ok: false, lane: String(laneRef || "default"), cdpHost: "http://127.0.0.1:9222", url: args.url || "https://chat.deepseek.com/", alreadyUp: false, openedTab: false, reason: lane.reason, hint: lane.hint };
         } else {
           const port = args.port ?? lane.port;
           const cliArgs = [path.join(__dirname, "browser_launcher.mjs"), "--backend", args.backend || "deepseek", "--port", String(port), "--profile", lane.profile];
           if (args.url) cliArgs.push("--url", args.url);
+          // 私有通道（非 default）：只允许附着于本通道此前拉起的实例，避免连上别人的浏览器
+          if (!lane.builtin) cliArgs.push("--strict", "--expect-pid", String(lane.browserPid ?? 0));
           let r;
           try {
             r = JSON.parse(execFileSync(process.execPath, cliArgs, { encoding: "utf8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] }));
           } catch (e) {
             r = { ok: false, cdpHost: cdpHostOf(port), url: args.url || "https://chat.deepseek.com/", hint: `启动浏览器失败: ${e.message}` };
           }
-          res = { ok: !!r.ok, lane: lane.lane, cdpHost: r.cdpHost, url: r.url, alreadyUp: !!r.alreadyUp, openedTab: !!r.openedTab, hint: r.hint };
+          if (r.ok && !lane.builtin && Number.isInteger(r.pid)) markBrowserPid(lane.lane, r.pid);
+          if (!r.ok && r.reason === "PORT_OCCUPIED") {
+            // 端口被外部占用：释放该通道注册，避免端口号被永久占死（有发送记录时不释放）
+            const rel = releaseLane(lane.lane);
+            res = {
+              ok: false, lane: lane.lane, cdpHost: r.cdpHost || cdpHostOf(port), url: r.url || args.url || "https://chat.deepseek.com/",
+              alreadyUp: false, openedTab: false, reason: "PORT_OCCUPIED",
+              hint: `${r.hint}${rel.ok && rel.removed ? "（已释放该通道注册，下次将分配其他端口）" : ""}`,
+            };
+          } else {
+            res = { ok: !!r.ok, lane: lane.lane, cdpHost: r.cdpHost, url: r.url, alreadyUp: !!r.alreadyUp, openedTab: !!r.openedTab, attached: !!r.attached, hint: r.hint };
+          }
         }
       } else if (name === "agent_link_browser_status") {
-        const lane = resolveLane(args.lane);
+        const laneRef = args.lane || (args.project ? laneIdFromProject(args.project) : null);
+        const lane = resolveLane(laneRef, { create: false });
         if (!lane.ok) {
-          res = { ok: false, lane: String(args.lane || "default"), cdp: { up: false }, chatPages: [], convFound: false, hints: [lane.hint], ready: false, reason: lane.reason };
+          res = { ok: false, lane: String(laneRef || "default"), cdp: { up: false }, chatPages: [], convFound: false, hints: [lane.hint], hint: lane.hint, ready: false, reason: lane.reason };
         } else {
           const tmp = path.join(os.tmpdir(), `agent-link-diag-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
           const cliArgs = [path.join(__dirname, "relay.mjs"), "--diag", "--cdp", cdpHostOf(lane.port), "--json-out", tmp];
           if (args.backend) cliArgs.push("--backend", args.backend);
           if (args.conv) cliArgs.push("--conv", args.conv);
-          let d = { cdp: { up: false }, chatPages: [], convFound: false, hints: [] };
+          let d = null;
           let childErr = null;
           try {
             execFileSync(process.execPath, cliArgs, { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
           } catch (e) { childErr = e; }
           // 优先读文件：子进程可能 fast-fail 崩溃（Windows/Node24 下 process.exit 与未关闭 socket 冲突），
-          // 但 --json-out 在崩溃前已同步落盘；stdout 解析仅作兜底。
-          try { if (fs.existsSync(tmp)) d = JSON.parse(fs.readFileSync(tmp, "utf8")); } catch {}
+          // 但 --json-out 是 tmp+rename 原子落盘，要么完整、要么不存在（DS 评审 P1-3）。
+          try { if (fs.existsSync(tmp)) d = JSON.parse(fs.readFileSync(tmp, "utf8")); } catch (e) { childErr = childErr || { message: `诊断结果解析失败: ${e.message}` }; }
           try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
-          if ((!d.hints || d.hints.length === 0) && childErr) d.hints = [`诊断子进程异常退出（${childErr.status ?? childErr.message}）`];
+          if (!d || typeof d !== "object") {
+            // 文件缺失/损坏 → 回退到子进程退出码与 stderr 尾部，给出可读原因而不是空结果
+            const tail = childErr ? String(childErr.stderr || childErr.message || "").split("\n").filter(Boolean).slice(-2).join(" | ").slice(0, 200) : "";
+            d = { cdp: { up: false }, chatPages: [], convFound: false, hints: [`诊断未取得结果${childErr && childErr.status ? `（子进程退出码 ${childErr.status}）` : ""}${tail ? `：${tail}` : ""}`] };
+          }
           // 多通道场景：非 default 通道的浏览器没起来时，明确提示"启动这个 lane"，而不是笼统的 9222
           if (d.cdp && d.cdp.up === false && lane.lane !== "default") {
             d.hints = [`通道 ${lane.lane} 的浏览器未启动（${cdpHostOf(lane.port)}）；请调用 agent_link_browser_open { "lane": "${lane.lane}" } 启动并登录`, ...(d.hints || [])];
@@ -514,19 +548,30 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
           res = { ok: true, lane: lane.lane, cdp: d.cdp, chatPages: d.chatPages || [], convFound: !!d.convFound, hints: d.hints || [], ready };
         }
       } else if (name === "agent_link_send_message") {
-        const lane = resolveLane(args.lane);
+        const laneRef = args.lane || (args.project ? laneIdFromProject(args.project) : null);
+        const lane = resolveLane(laneRef, { create: false });
         if (!lane.ok) {
-          res = { ok: false, lane: String(args.lane || "default"), replyText: "", targetUrl: "", backend: "", reason: lane.reason, hint: lane.hint };
+          res = { ok: false, lane: String(laneRef || "default"), replyText: "", targetUrl: "", backend: "", reason: lane.reason, hint: lane.hint };
         } else {
           const tmp = path.join(os.tmpdir(), `agent-link-relay-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
           const cliArgs = [path.join(__dirname, "relay.mjs"), "--text", String(args.message), "--cdp", cdpHostOf(lane.port), "--state-dir", lane.stateDir];
           if (args.backend && args.backend !== "auto") cliArgs.push("--backend", args.backend);
           if (args.conv) cliArgs.push("--conv", args.conv);
           cliArgs.push("--json-out", tmp);
-          try { execFileSync(process.execPath, cliArgs, { encoding: "utf8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"] }); } catch {}
-          let r = { ok: false, replyText: "", targetUrl: "", backend: "", reason: "RELAY_FAILED", hint: `通道 ${lane.lane} 发送失败：请先对该 lane 运行 agent_link_browser_open 并登录` };
-          try { if (fs.existsSync(tmp)) r = JSON.parse(fs.readFileSync(tmp, "utf8")); } catch {}
+          // 超时必须大于 relay 的 replyTimeoutMs（默认 180s），否则慢回复会被误杀、且已发出的消息被护栏阻断重发
+          let childErr = null;
+          try { execFileSync(process.execPath, cliArgs, { encoding: "utf8", timeout: 210000, stdio: ["ignore", "pipe", "pipe"] }); } catch (e) { childErr = e; }
+          let r = null;
+          // 优先读原子落盘的 --json-out；文件缺失/损坏时回退到子进程退出码与 stderr（DS 评审 P1-3）
+          try { if (fs.existsSync(tmp)) r = JSON.parse(fs.readFileSync(tmp, "utf8")); } catch (e) { childErr = childErr || { message: `发送结果解析失败: ${e.message}` }; }
           try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+          if (!r || typeof r !== "object") {
+            const tail = childErr ? String(childErr.stderr || childErr.message || "").split("\n").filter(Boolean).slice(-2).join(" | ").slice(0, 200) : "";
+            r = {
+              ok: false, replyText: "", targetUrl: "", backend: "", reason: "RELAY_NO_RESULT",
+              hint: `通道 ${lane.lane} 未取得发送结果${childErr && childErr.status ? `（子进程退出码 ${childErr.status}）` : ""}${tail ? `：${tail}` : ""}。请确认该通道浏览器已启动并登录（agent_link_browser_open 带同一 lane/project）`,
+            };
+          }
           res = { ok: !!r.ok, lane: lane.lane, replyText: r.replyText || "", targetUrl: r.targetUrl || "", backend: r.backend || "", reason: r.reason || undefined, hint: r.hint || undefined };
         }
       } else res = service.submitResult({

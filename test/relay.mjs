@@ -6,6 +6,8 @@
 //   - 复用已验证的 DOM 输入/点击思路与 read_conversation 只读快照。
 import fs from "node:fs";
 import path from "node:path";
+import dns from "node:dns";
+import net from "node:net";
 import { randomBytes, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WSClient } from "./cdp_ws_client.mjs";
@@ -799,6 +801,18 @@ function parseArgs(argv) {
   return out;
 }
 
+// 结构化结果落盘（DS 评审 P1-3）：tmp+rename 原子写入。
+// 子进程在 Windows/Node 上可能被 process.exit 触发 fast-fail，非原子写会留下截断的 JSON；
+// 原子替换保证调用方要么读到完整文件、要么读到"不存在"。
+function writeJsonOut(file, obj) {
+  try {
+    const out = JSON.stringify(obj, null, 2);
+    const tmp = `${file}.tmp-${process.pid}-${Date.now().toString(36)}`;
+    fs.writeFileSync(tmp, out, "utf8");
+    fs.renameSync(tmp, file);
+  } catch {}
+}
+
 const __isMain = process.argv[1] && fileURLToPath(import.meta.url).toLowerCase() === path.resolve(process.argv[1]).toLowerCase();
 if (__isMain) {
   const opts = parseArgs(process.argv.slice(2));
@@ -815,10 +829,17 @@ if (__isMain) {
     }
   }
   if (opts.cdp) {
-    // 多通道（lane）：把发送/诊断指向另一个浏览器实例。仅允许回环地址，避免把中继指向任意主机。
+    // 多通道（lane）：把发送/诊断指向另一个浏览器实例。
+    // 回环校验以"解析后的 IP"为准（DS 评审 P1-4）：主机名 localhost 在 hosts 被篡改时可能指向非回环。
     const cdp = String(opts.cdp).replace(/\/$/, "");
-    if (!/^https?:\/\/(127\.0\.0\.1|localhost):\d+$/.test(cdp)) {
-      console.error("CFG_ERROR --cdp 仅支持本机回环地址（形如 http://127.0.0.1:9222）");
+    let u = null;
+    try { u = new URL(cdp); } catch {}
+    const host = u ? u.hostname.replace(/^\[|\]$/g, "") : "";
+    let ips = [];
+    if (host) { try { ips = (await dns.promises.lookup(host, { all: true })).map((r) => r.address); } catch { ips = []; } }
+    const loopback = ips.length > 0 && ips.every((ip) => net.isIP(ip) && (ip.startsWith("127.") || ip === "::1"));
+    if (!u || (u.protocol !== "http:" && u.protocol !== "https:") || !loopback) {
+      console.error("CFG_ERROR --cdp 必须指向本机回环地址（解析后为 127.0.0.0/8 或 ::1），形如 http://127.0.0.1:9222");
       process.exit(64);
     }
     config.cdpHost = cdp;
@@ -842,7 +863,7 @@ if (__isMain) {
     console.log("DIAG " + JSON.stringify(d, null, 2));
     // 文件输出优先：stdout 走管道时可能被紧随的 process.exit 截断（Node/Windows 上子进程甚至 fast-fail 崩溃），
     // 因此调用方（如 MCP 工具）应优先读 --json-out 文件，stdout 仅作人工查看。
-    if (opts.jsonOut) fs.writeFileSync(opts.jsonOut, JSON.stringify(d, null, 2), "utf8");
+    if (opts.jsonOut) writeJsonOut(opts.jsonOut, d);
     process.exit(d.cdp && d.cdp.up ? 0 : 3);
   }
   if (opts.repairWal) {
@@ -891,10 +912,13 @@ if (__isMain) {
   if (text == null) { console.error("缺少 --text 或 --report-file"); process.exit(64); }
   sendAndRead({ config, text, stateDir, preferBackend: opts.backend || null, log: (m) => console.error(m) })
     .then((res) => {
-      const out = JSON.stringify(res, null, 2);
-      if (opts.jsonOut) fs.writeFileSync(opts.jsonOut, out, "utf8");
-      console.log("RELAY_RESULT " + out);
+      if (opts.jsonOut) writeJsonOut(opts.jsonOut, res);
+      console.log("RELAY_RESULT " + JSON.stringify(res, null, 2));
       process.exit(res.ok ? 0 : 1);
     })
-    .catch((e) => { console.error("RELAY_ERROR " + e.message); if (opts.jsonOut) { try { fs.writeFileSync(opts.jsonOut, JSON.stringify({ ok: false, reason: "RELAY_ERROR", hint: e.message }, null, 2), "utf8"); } catch {} } process.exit(3); });
+    .catch((e) => {
+      console.error("RELAY_ERROR " + e.message);
+      if (opts.jsonOut) writeJsonOut(opts.jsonOut, { ok: false, reason: "RELAY_ERROR", hint: e.message });
+      process.exit(3);
+    });
 }

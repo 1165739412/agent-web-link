@@ -66,7 +66,7 @@
 
 ### 多项目并行：`lane`（浏览器通道）
 
-三个浏览器工具都接受可选参数 `lane`（默认 `default`）。**一个 lane = 一个独立浏览器实例**，三件套全独立：
+三个浏览器工具都接受两个可选参数：**`project`（推荐）** 与 `lane`。**一个 lane = 一个独立浏览器实例**，三件套全独立：
 
 | lane | CDP 端口 | 登录 profile | 发送状态目录（锁/WAL） |
 |---|---|---|---|
@@ -74,17 +74,22 @@
 | 你起的名字（如 `proj-a`） | 9223 起自动分配 | `test/browser-profile-<lane>` | `test/state-<lane>` |
 
 ```jsonc
-// 项目 A 与项目 B 各自一条通道 → 真正并行，互不阻塞
-{ "name": "agent_link_browser_open",  "arguments": { "lane": "proj-a" } }
-{ "name": "agent_link_send_message",  "arguments": { "message": "...", "lane": "proj-a" } }
+// 推荐：把项目名传进 project，服务端自动派生该项目的独立通道
+{ "name": "agent_link_browser_open",  "arguments": { "project": "proj-a" } }
+{ "name": "agent_link_send_message",  "arguments": { "message": "...", "project": "proj-a" } }
+
+// 也可以显式指定通道名（不要与 project 同时传）
 { "name": "agent_link_send_message",  "arguments": { "message": "...", "lane": "proj-b" } }
 ```
 
-- **新 lane 首次要你手动登录一次**（独立 profile，可绑不同账号）。
-- **同一 lane 内并发**：后到者返回 `RELAY_BUSY`（单进程锁，防重复发送/串消息），稍后重试即可。
+- **不说明也不会挤同一窗口**：传了 `project` 就必然走该项目自己的通道；该通道没建时会返回 `LANE_NOT_FOUND` 并提示"先 `browser_open` 同一个 project/lane 并登录"，而不是默默发进别人的对话。
+- 项目名派生规则：仅大小写差异直接归一（`My-Proj` → `my-proj`）；含非法字符/过长则追加 sha1 短哈希，保证不同项目不会碰撞到同一通道。
+- **新通道首次要你手动登录一次**（独立 profile，可绑不同账号）。
+- **同一通道内并发**：后到者返回 `RELAY_BUSY`（单进程锁，防重复发送/串消息），稍后重试即可。
 - 不变量：**锁的粒度 = 浏览器的粒度**。只有独立浏览器才配独立状态目录；反之（同浏览器、不同状态目录）会同时往一个浏览器打字、读错回复，绝不要那样配。
 - `lane` 名仅允许小写字母/数字/`_`/`-`（1–32 字符，不以 `-` 开头），非法值在协议层直接 `-32602`，不会拼出路径。
-- 查看当前分配：`node test/browser_lanes.mjs`。
+- 私有通道（非 `default`）只会附着于**本通道自己拉起的浏览器**；端口被别的程序占用时返回 `PORT_OCCUPIED` 并自动释放该通道注册，不会悄悄连上别人的窗口。
+- 上限 16 个通道（端口 9223–9238）；查看当前分配：`node test/browser_lanes.mjs`。
 
 - 协议：stdio + JSON-RPC 2.0（换行分隔）。
 - 生命周期：先 `initialize`（含 `instructions`）→ 客户端回 `notifications/initialized` → 才可调用工具。

@@ -335,34 +335,38 @@ curl -s -X POST http://127.0.0.1:8787/v1/tasks \
 > ⚠️ **安全边界**：浏览器工具会操作你本机已登录的聊天账号。仅在**可信本机**使用；任何接入 agent-link 的 agent 都能调用它们，等同于以你的身份收发消息。不要把本机 MCP 暴露给不可信环境。
 
 - **`agent_link_browser_open`**
-  - **用途**：启动带远程调试端口的 Chromium（自动探测 Chrome/Edge/Chromium）并打开目标网页；若该端口已有实例则只新开标签页。
-  - **参数**：`backend`（deepseek|chatgpt，默认 deepseek）、`url`（可选覆盖）、`lane`（通道，默认 default）、`port`（一般不传）。
-  - **返回**：`ok / cdpHost / url / alreadyUp / openedTab / lane / hint`。**不等待登录**——启动后请在页面内登录，再调用 `send_message`。
+  - **用途**：启动带远程调试端口的 Chromium（自动探测 Chrome/Edge/Chromium）并打开目标网页；若该端口已有本通道实例则只新开标签页。
+  - **参数**：`backend`（deepseek|chatgpt，默认 deepseek）、`url`（可选覆盖）、`project`（推荐）、`lane`（二选一，默认 default）、`port`（一般不传）。
+  - **返回**：`ok / cdpHost / url / alreadyUp / openedTab / attached / lane / reason? / hint`。**不等待登录**——启动后请在页面内登录，再调用 `send_message`。
 - **`agent_link_browser_status`**（只读，不发送）
   - **用途**：诊断通道：CDP 是否可达、有无聊天页、指定会话是否打开、登录/输入框是否就绪。
-  - **参数**：`backend`（可选）、`conv`（可选，会话 ID）、`lane`（可选）。
-  - **返回**：`cdp / chatPages / convFound / hints / ready / lane`；`ready=true` 表示可发送。
+  - **参数**：`backend`（可选）、`conv`（可选，会话 ID）、`project`（可选）、`lane`（可选）。
+  - **返回**：`cdp / chatPages / convFound / hints / ready / lane / reason? / hint`；`ready=true` 表示可发送。
 - **`agent_link_send_message`**
   - **用途**：向已登录的 DeepSeek/ChatGPT 发送 `message` 并读回最新回复；失败返回可读 `reason`/`hint`（含“请启动浏览器/请登录/网络错误”等可执行建议）。
-  - **必填**：`message`。**可选**：`backend`（deepseek|chatgpt|auto，默认 auto）、`conv`（定向会话）、`lane`（通道，默认 default）。
+  - **必填**：`message`。**可选**：`backend`（deepseek|chatgpt|auto，默认 auto）、`conv`（定向会话）、`project`（推荐）、`lane`（二选一，默认 default）。
   - **返回**：`ok / replyText / targetUrl / backend / lane / reason? / hint?`。**绝不自动重发**（安全失败原则）。
   - 底层复用 `relay.mjs` 的护栏：单进程锁、同会话隔离、发送前网络预检、上下文耗尽识别——详见 AGENT_BACKENDS.md。
 
-#### 多项目并行：`lane`（浏览器通道）
+#### 多项目并行：`project` / `lane`（浏览器通道）
 
-三个浏览器工具都接受可选 `lane`（默认 `default`）。**一个 lane = 一个独立浏览器实例**，三件套全独立：CDP 端口、登录 profile、发送状态目录（锁 + WAL）。
+三个浏览器工具都接受 `project`（推荐）与 `lane`（二选一，不要同时传）。**一个通道 = 一个独立浏览器实例**，三件套全独立：CDP 端口、登录 profile、发送状态目录（锁 + WAL）。
 
-| lane | CDP 端口 | 登录 profile | 发送状态目录 |
+| 通道 | CDP 端口 | 登录 profile | 发送状态目录 |
 |---|---|---|---|
 | `default` | 9222 | `test/browser-profile` | `test/state` |
-| 自定义名（如 `proj-a`） | 9223 起自动分配 | `test/browser-profile-<lane>` | `test/state-<lane>` |
+| 自定义名 / 项目派生名 | 9223 起自动分配 | `test/browser-profile-<lane>` | `test/state-<lane>` |
 
-- **并行**：不同 lane 各持各的锁，可真正同时发送；**同一 lane 内并发**返回 `RELAY_BUSY`（防重复发送/串消息），稍后重试即可。
-- **新 lane 首次需用户手动登录一次**（独立 profile，可绑不同账号）。
+- **传 `project` 即自动派生该项目的独立通道**：服务端按项目名生成稳定 lane（仅大小写差异直接归一，如 `My-Proj` → `my-proj`；含非法字符或过长则追加 sha1 短哈希，保证不同项目不碰撞）。因此**不特意说明也不会挤进同一个窗口**——别的项目传自己的 `project`，拿到的就是另一条通道。
+- 该通道未创建时返回 `LANE_NOT_FOUND`，提示“先 `browser_open` 同一个 project/lane 并登录”，而不是静默发进别人的对话。
+- **并行**：不同通道各持各的锁，可真正同时发送；**同一通道内并发**返回 `RELAY_BUSY`（防重复发送/串消息），稍后重试即可。
+- **新通道首次需用户手动登录一次**（独立 profile，可绑不同账号）。
+- **私有通道（非 default）只附着于本通道自己拉起的浏览器**：端口被别的程序占用时返回 `PORT_OCCUPIED` 并自动释放该通道注册（无发送记录时），不会悄悄连上别人的窗口。
 - **不变量：锁的粒度必须等于浏览器的粒度**。只有独立浏览器才配独立状态目录；反过来（同浏览器、不同状态目录）会让两把锁互不知情，同时往一个浏览器打字、读错回复——**禁止**。
-- `lane` 名仅允许小写字母/数字/`_`/`-`（1–32 字符，不以 `-` 开头）；非法值在协议层直接 `-32602`，不会参与任何路径拼接。
+- `lane` 名仅允许小写字母/数字/`_`/`-`（1–32 字符，不以 `-` 开头）；非法值在协议层直接 `-32602`，不参与任何路径拼接。
+- 注册表并发安全：分配过程在独占锁（`browser_lanes.lock`）临界区内完成，多进程同时注册不同通道不会撞端口、不会丢注册。
+- 上限 16 个通道（端口 9223–9238），达限返回可操作的 `LANE_LIMIT`。
 - 分配结果持久化在 `test/state/browser_lanes.json`（gitignored）；查看：`node test/browser_lanes.mjs`。
-- 上限 16 个通道（端口 9223–9238）。
 
 ---
 

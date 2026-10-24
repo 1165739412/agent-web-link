@@ -331,6 +331,27 @@ record("V35 浏览器工具 lane 参数：非法 ID 在协议层拒绝（-32602�
     assert.equal(t.inputSchema.additionalProperties, false);
   }
 });
+record("V37 浏览器工具 project 参数：按项目派生通道，未创建时给可执行提示（不发子进程）", () => {
+  const st = { negotiatedVersion: "2024-11-05", initialized: true };
+  const tools = call(service, { jsonrpc: "2.0", id: 62, method: "tools/list" }, st).result.tools;
+  for (const t of tools.filter((x) => x.name.startsWith("agent_link_browser"))) {
+    assert.ok(t.inputSchema.properties.project, `${t.name} 应声明 project 参数`);
+  }
+  // 三个浏览器工具都接受 project；status/send 用 create:false，未注册通道 → LANE_NOT_FOUND（可执行提示，非协议错误）
+  for (const name of ["agent_link_browser_status", "agent_link_send_message"]) {
+    const args = name === "agent_link_send_message" ? { message: "x", project: "UT-NEVER-CREATED" } : { project: "UT-NEVER-CREATED" };
+    const r = call(service, { jsonrpc: "2.0", id: 63, method: "tools/call", params: { name, arguments: args } }, st);
+    assert.equal(r.error, undefined, `${name} 带 project 不应被协议层拒绝`);
+    const obj = JSON.parse(r.result.content[0].text);
+    assert.equal(obj.ok, false);
+    assert.equal(obj.reason, "LANE_NOT_FOUND", `${name} 未创建通道应返回 LANE_NOT_FOUND`);
+    assert.equal(obj.lane, "ut-never-created", "应按项目名派生 lane（小写）");
+    assert.ok(/browser_open/.test(obj.hint || ""), "提示应指引先创建通道");
+  }
+  // project 与 lane 同时传：显式 lane 优先（不得派生）
+  const r = call(service, { jsonrpc: "2.0", id: 64, method: "tools/call", params: { name: "agent_link_browser_status", arguments: { project: "UT-NEVER-CREATED", lane: "explicit-lane" } } }, st);
+  assert.equal(JSON.parse(r.result.content[0].text).lane, "explicit-lane", "显式 lane 应优先于 project 派生");
+});
 record("V36 validateSchema 支持 pattern（字符串格式约束）", () => {
   assert.deepEqual(validateSchema("proj-a", { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,31}$" }), []);
   assert.equal(validateSchema("a/b", { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,31}$" }).length, 1);
