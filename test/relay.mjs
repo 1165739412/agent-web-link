@@ -23,7 +23,7 @@ export const RELAY_CONFIG_DEFAULT = path.join(__dirname, "relay.config.json");
 export const CDP_DEFAULT = "http://127.0.0.1:9222";
 
 const RELAY_USAGE = `用法: node test/relay.mjs [--report-file <f> | --text <s>] [--conv <id>] [--backend deepseek|chatgpt]
-       [--json-out <f>] [--config <f>] [--state-dir <dir>] | --probe [--conv <id>] | --diag | --recover [--conv <id>] | --probe-url <url>
+       [--json-out <f>] [--config <f>] [--state-dir <dir>] [--cdp <url>] | --probe [--conv <id>] | --diag | --recover [--conv <id>] | --probe-url <url>
 
   --report-file/--text  发送内容（二选一）
   --conv <id>           只发送到包含该会话 ID 的标签页
@@ -774,7 +774,7 @@ export async function recover({ config, stateDir, convId = null, taskId = null, 
 
 // ---- CLI ----
 function parseArgs(argv) {
-  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, probe: false, probeUrl: null, backend: null, diag: false, recover: false, recoverRun: null, recoverTask: null, recoverExpect: null, recoverUnverified: false, repairWal: false, force: false, help: false };
+  const out = { reportFile: null, text: null, conv: null, jsonOut: null, configFile: null, stateDir: null, cdp: null, probe: false, probeUrl: null, backend: null, diag: false, recover: false, recoverRun: null, recoverTask: null, recoverExpect: null, recoverUnverified: false, repairWal: false, force: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report-file") out.reportFile = argv[++i];
     else if (argv[i] === "--text") out.text = argv[++i];
@@ -782,6 +782,7 @@ function parseArgs(argv) {
     else if (argv[i] === "--json-out") out.jsonOut = argv[++i];
     else if (argv[i] === "--config") out.configFile = argv[++i];
     else if (argv[i] === "--state-dir") out.stateDir = argv[++i];
+    else if (argv[i] === "--cdp") out.cdp = argv[++i];
     else if (argv[i] === "--backend") out.backend = argv[++i];
     else if (argv[i] === "--probe") out.probe = true;
     else if (argv[i] === "--probe-url") out.probeUrl = argv[++i];
@@ -813,6 +814,15 @@ if (__isMain) {
       process.exit(64);
     }
   }
+  if (opts.cdp) {
+    // 多通道（lane）：把发送/诊断指向另一个浏览器实例。仅允许回环地址，避免把中继指向任意主机。
+    const cdp = String(opts.cdp).replace(/\/$/, "");
+    if (!/^https?:\/\/(127\.0\.0\.1|localhost):\d+$/.test(cdp)) {
+      console.error("CFG_ERROR --cdp 仅支持本机回环地址（形如 http://127.0.0.1:9222）");
+      process.exit(64);
+    }
+    config.cdpHost = cdp;
+  }
   if (opts.conv) config.conversations = [{ id: opts.conv, url: `https://chatgpt.com/c/${opts.conv}` }, ...(config.conversations || [])];
   const stateDir = opts.stateDir || path.join(__dirname, "state");
 
@@ -830,6 +840,9 @@ if (__isMain) {
   if (opts.diag) {
     const d = await diagnose({ cdpHost: config.cdpHost || CDP_DEFAULT, backends: resolveBackends(config), convId: opts.conv || null, backend: opts.backend || null });
     console.log("DIAG " + JSON.stringify(d, null, 2));
+    // 文件输出优先：stdout 走管道时可能被紧随的 process.exit 截断（Node/Windows 上子进程甚至 fast-fail 崩溃），
+    // 因此调用方（如 MCP 工具）应优先读 --json-out 文件，stdout 仅作人工查看。
+    if (opts.jsonOut) fs.writeFileSync(opts.jsonOut, JSON.stringify(d, null, 2), "utf8");
     process.exit(d.cdp && d.cdp.up ? 0 : 3);
   }
   if (opts.repairWal) {
@@ -883,5 +896,5 @@ if (__isMain) {
       console.log("RELAY_RESULT " + out);
       process.exit(res.ok ? 0 : 1);
     })
-    .catch((e) => { console.error("RELAY_ERROR " + e.message); process.exit(3); });
+    .catch((e) => { console.error("RELAY_ERROR " + e.message); if (opts.jsonOut) { try { fs.writeFileSync(opts.jsonOut, JSON.stringify({ ok: false, reason: "RELAY_ERROR", hint: e.message }, null, 2), "utf8"); } catch {} } process.exit(3); });
 }

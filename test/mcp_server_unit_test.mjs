@@ -313,6 +313,29 @@ record("V32 resources/list 截断语义：truncated 显式（未截断为 false�
   assert.ok(Array.isArray(r.result.resources));
 });
 
+record("V35 浏览器工具 lane 参数：非法 ID 在协议层拒绝（-32602），不进子进程", () => {
+  const st = { negotiatedVersion: "2024-11-05", initialized: true };
+  const bad = ["../evil", "..", "a/b", "a\\b", "-x", "x".repeat(33), "a.b", "UP PER"];
+  for (const v of bad) {
+    for (const name of ["agent_link_browser_open", "agent_link_browser_status", "agent_link_send_message"]) {
+      const args = name === "agent_link_send_message" ? { message: "x", lane: v } : { lane: v };
+      const r = call(service, { jsonrpc: "2.0", id: 60, method: "tools/call", params: { name, arguments: args } }, st);
+      assert.equal(r.error && r.error.code, -32602, `${name} lane=${JSON.stringify(v)} 应被 -32602 拒绝`);
+    }
+  }
+  // 合法 lane 不得被 schema 层拒绝（仅验证不触发执行：这里只校验错误码不是 -32602）
+  const tools = call(service, { jsonrpc: "2.0", id: 61, method: "tools/list" }, st).result.tools;
+  for (const t of tools.filter((x) => x.name.startsWith("agent_link_browser"))) {
+    assert.ok(t.inputSchema.properties.lane, `${t.name} 应声明 lane 参数`);
+    assert.equal(t.inputSchema.properties.lane.pattern, "^[a-z0-9][a-z0-9_-]{0,31}$");
+    assert.equal(t.inputSchema.additionalProperties, false);
+  }
+});
+record("V36 validateSchema 支持 pattern（字符串格式约束）", () => {
+  assert.deepEqual(validateSchema("proj-a", { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,31}$" }), []);
+  assert.equal(validateSchema("a/b", { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,31}$" }).length, 1);
+});
+
 console.log(results.join("\n"));
 console.log(`\n合计: ${passed}/${results.length} 通过`);
 if (passed !== results.length) process.exitCode = 1;

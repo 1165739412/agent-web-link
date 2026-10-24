@@ -82,6 +82,9 @@ record("S2 tools/list：9 工具、每个含 inputSchema+outputSchema+annotation
   }
 });
 
+// 专用 lane：该通道的浏览器永远不会被启动，因此 send_message 必然在"解析目标"阶段失败，
+// 绝不会真的把消息发到任何已登录账号上（自动化套件严禁真实发送）。
+const INSP_LANE = "inspector-equiv";
 const SAFE_ARGS = {
   agent_link_submit_result: { project: "insp-proj", taskId: "no-such-task", ok: true, evidence: "inspector-equiv" },
   agent_link_claim_next_task: { project: "insp-proj" },
@@ -89,8 +92,8 @@ const SAFE_ARGS = {
   agent_link_list_projects: {},
   agent_link_list_tasks: { project: "insp-proj" },
   agent_link_list_reports: { project: "insp-proj" },
-  agent_link_browser_status: {},
-  agent_link_send_message: { message: "inspector-ping" },
+  agent_link_browser_status: { lane: INSP_LANE },
+  agent_link_send_message: { message: "inspector-ping", lane: INSP_LANE },
 };
 
 for (const t of list.result.tools) {
@@ -103,9 +106,26 @@ for (const t of list.result.tools) {
   record(`S3 tools/call ${t.name}：返回 content[0].text 为 JSON`, () => {
     if (r.error) throw new Error("协议错误: " + r.error.message);
     if (!r.raw.result?.content?.[0]?.text) throw new Error("缺 content[0].text");
-    JSON.parse(r.raw.result.content[0].text);
+    const obj = JSON.parse(r.raw.result.content[0].text);
+    if (t.name === "agent_link_send_message") {
+      // 护栏断言：必须因"无就绪页面"失败，且绝不能 ok=true（即没有真的发出去）
+      if (obj.ok === true) throw new Error("inspector 套件不得真实发送消息");
+      if (obj.lane !== INSP_LANE) throw new Error("send_message 应回显所用 lane");
+    }
   });
 }
+
+// 清理专用 lane 的运行残留（注册表条目 + 该 lane 的 state 目录），避免污染本机
+try {
+  const { listLanes } = await import("./browser_lanes.mjs");
+  const lanes = listLanes();
+  const lane = lanes[INSP_LANE];
+  if (lane && lane.stateDir) fs.rmSync(lane.stateDir, { recursive: true, force: true });
+  const lanesFile = new URL("./state/browser_lanes.json", import.meta.url);
+  const raw = JSON.parse(fs.readFileSync(lanesFile, "utf8"));
+  delete raw[INSP_LANE];
+  fs.writeFileSync(lanesFile, JSON.stringify(raw, null, 2), "utf8");
+} catch {}
 
 const rl = await request("resources/list", {});
 record("S4 resources/list：结构合法（可能为空，_meta.truncated 显式）", () => {

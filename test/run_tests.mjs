@@ -15,6 +15,7 @@ const SUITES = [
   "comm_integration_test.mjs",
   "agent_integration_doc_test.mjs",
   "relay_test.mjs",                 // 纯逻辑，不触浏览器
+  "browser_lanes_test.mjs",         // lane 通道注册表（多项目并行隔离），纯逻辑
   "context_recovery_test.mjs",
   "pending_reports_test.mjs",
   "run_state_store_test.mjs",

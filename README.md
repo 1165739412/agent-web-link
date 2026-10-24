@@ -58,11 +58,33 @@
 
 | 工具 | 只读 | 作用 |
 |---|---|---|
-| `agent_link_browser_open` | ❌ | 启动带调试端口（默认 9222）的 Chromium（自动探测 Chrome/Edge）并打开 DeepSeek/ChatGPT；**登录由用户在页面内手动完成** |
+| `agent_link_browser_open` | ❌ | 启动带调试端口的 Chromium（自动探测 Chrome/Edge）并打开 DeepSeek/ChatGPT；**登录由用户在页面内手动完成** |
 | `agent_link_browser_status` | ✅ | 只读诊断通道：CDP 是否可达、有无聊天页、会话是否打开、是否就绪（不发送） |
 | `agent_link_send_message` | ❌ | 向已登录的 DeepSeek/ChatGPT 发送消息并读回最新回复；失败给可读原因；绝不自动重发 |
 
 > 浏览器类工具会操作你本机已登录的聊天账号，仅在**可信本机**启用；任何接入 agent-link 的 agent 都能调用它们，等同于以你的身份收发消息。
+
+### 多项目并行：`lane`（浏览器通道）
+
+三个浏览器工具都接受可选参数 `lane`（默认 `default`）。**一个 lane = 一个独立浏览器实例**，三件套全独立：
+
+| lane | CDP 端口 | 登录 profile | 发送状态目录（锁/WAL） |
+|---|---|---|---|
+| `default` | 9222 | `test/browser-profile` | `test/state` |
+| 你起的名字（如 `proj-a`） | 9223 起自动分配 | `test/browser-profile-<lane>` | `test/state-<lane>` |
+
+```jsonc
+// 项目 A 与项目 B 各自一条通道 → 真正并行，互不阻塞
+{ "name": "agent_link_browser_open",  "arguments": { "lane": "proj-a" } }
+{ "name": "agent_link_send_message",  "arguments": { "message": "...", "lane": "proj-a" } }
+{ "name": "agent_link_send_message",  "arguments": { "message": "...", "lane": "proj-b" } }
+```
+
+- **新 lane 首次要你手动登录一次**（独立 profile，可绑不同账号）。
+- **同一 lane 内并发**：后到者返回 `RELAY_BUSY`（单进程锁，防重复发送/串消息），稍后重试即可。
+- 不变量：**锁的粒度 = 浏览器的粒度**。只有独立浏览器才配独立状态目录；反之（同浏览器、不同状态目录）会同时往一个浏览器打字、读错回复，绝不要那样配。
+- `lane` 名仅允许小写字母/数字/`_`/`-`（1–32 字符，不以 `-` 开头），非法值在协议层直接 `-32602`，不会拼出路径。
+- 查看当前分配：`node test/browser_lanes.mjs`。
 
 - 协议：stdio + JSON-RPC 2.0（换行分隔）。
 - 生命周期：先 `initialize`（含 `instructions`）→ 客户端回 `notifications/initialized` → 才可调用工具。
