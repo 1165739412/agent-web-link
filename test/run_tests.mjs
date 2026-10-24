@@ -59,8 +59,11 @@ async function worker() {
     const s = queue.shift();
     const tSuite = Date.now();
     const { out } = await runOne(s);
-    const m = out.match(/合计:\s*(\d+)\/(\d+)\s*通过/);
-    const ok = m ? m[2] === m[1] : false;
+    // 判定通过：优先"合计: X/Y 通过"，其次"X 通过 / Y 失败"（新套件可能用别的措辞）。
+    // 只看单一措辞会把正常套件误判为失败（曾误报 eval_budget / read_reply_schema）。
+    const mTotal = out.match(/合计:\s*(\d+)\/(\d+)\s*通过/);
+    const mFailed = out.match(/(\d+)\s*通过\s*\/\s*(\d+)\s*失败/);
+    const ok = mTotal ? mTotal[1] === mTotal[2] : (mFailed ? Number(mFailed[2]) === 0 : false);
     const skipped = /SKIPPED/.test(out);
     resultBySuite.set(s, `${ok ? "PASS" : "FAIL"} ${s}${skipped ? " (含SKIP)" : ""} (${((Date.now() - tSuite) / 1000).toFixed(1)}s)`);
     if (!ok) failed++;
