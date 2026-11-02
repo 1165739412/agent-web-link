@@ -285,7 +285,7 @@ export const TOOLS = [
       properties: {
         cdp: { type: "object" }, chatPages: { type: "array", items: { type: "string" } },
         convFound: { type: "boolean" }, hints: { type: "array", items: { type: "string" } }, ready: { type: "boolean" },
-        loggedIn: { type: "boolean" }, reason: { type: "string" }, lane: { type: "string" },
+        loggedIn: { type: ["boolean", "null"] }, reason: { type: "string" }, lane: { type: "string" },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -579,8 +579,12 @@ export function handleRequest(service, msg, log = () => {}, state = { negotiated
             && (d.hints || []).some((h) => h.includes("可以发送"));
           // 登录态必须显式回传：composer 存在 ≠ 已登录（未登录首页同样有输入框），
           // 否则调用方会误判"就绪"而发出去失败。
+          // 只有明确判定 false（看到登录按钮）才提示去登录；
+          // loggedIn=null 表示"页面尚未渲染完、未确定"，此时绝不能说"请登录"（实测过的误报来源）。
           if (d.loggedIn === false) {
             d.hints = [`未登录：该页面有输入框但账号未登录。请在这个通道对应的浏览器窗口完成登录（通道 ${lane.lane}，${cdpHostOf(lane.port)}）`, ...(d.hints || [])];
+          } else if (d.loggedIn === null || d.loggedIn === undefined) {
+            d.hints = [`登录态未确定（页面可能仍在加载）：可稍后重试；若反复如此请刷新该页面`, ...(d.hints || [])];
           }
           res = { ok: true, lane: lane.lane, cdp: d.cdp, chatPages: d.chatPages || [], convFound: !!d.convFound, hints: d.hints || [], ready, loggedIn: d.loggedIn };
         }

@@ -34,6 +34,7 @@ scrub_pii.mjs
 
 # 临时文件
 *.tmp
+*.bak
 *.log
 .DS_Store
 test/tmp_*/

@@ -144,6 +144,22 @@ async function probePage(page, b = CG) {
   try { return await isPageReady(c, b); } finally { await c.close("relay-probe"); }
 }
 
+// 带等待的就绪探测：页面刚打开时 SPA 尚未水合（实测 +0ms 时 composer 都不存在），
+// 只探一次会把"还在加载"误判成"未就绪"，导致刚打开浏览器就发送必然失败。
+// 仅在"未就绪且非确定性失败（加载错误/上下文耗尽）"时等待重试，最多 waitMs。
+async function probePageWithWait(page, backend, { waitMs = 6000, intervalMs = 500, log = () => {} } = {}) {
+  let r = await probePage(page, backend);
+  if (r.ready || r.loadErr || r.limit) return r;      // 就绪 / 确定性失败 → 不必等
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await new Promise((res) => setTimeout(res, intervalMs));
+    r = await probePage(page, backend);
+    if (r.ready || r.loadErr || r.limit) return r;
+  }
+  log(`[RELAY] 目标页 ${waitMs}ms 内仍未就绪（composer=${!!r.composer}）`);
+  return r;
+}
+
 // 解析目标：配置顺序 → 就绪检查 → 必要时导航 → 退回其他就绪候选；都失败则明确报告
 export async function resolveTarget({ config, log = () => {}, preferBackend = null }) {
   const cdp = config.cdpHost || CDP_DEFAULT;
@@ -154,7 +170,7 @@ export async function resolveTarget({ config, log = () => {}, preferBackend = nu
   if (!pick.ok) return { ok: false, reason: pick.reason, hint: explainReason(pick.reason, { cdpHost: config.cdpHost || CDP_DEFAULT }) };
 
   let page = pick.page;
-  let ready = await probePage(page, selectBackend(page.url, backends) || CG);
+  let ready = await probePageWithWait(page, selectBackend(page.url, backends) || CG, { log });
 
   // 若命中的是配置会话但未就绪，尝试导航到其完整 URL
   const matchedConv = (config.conversations || []).find((c) => {

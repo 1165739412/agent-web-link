@@ -4,7 +4,7 @@
 //   - 不臆测原因：每条 hint 对应一个可用命令或一次可人工验证的动作；
 //   - 供 relay --probe 与 send_to_ds 在失败时调用（诊断与发送解耦，绝不因诊断阻塞发送）。
 import { WSClient } from "./cdp_ws_client.mjs";
-import { isPageReady, detectLoginState } from "./agent_backends.mjs";
+import { isPageReady, detectLoginStateWithRetry } from "./agent_backends.mjs";
 
 export const CDP_DEFAULT = "http://127.0.0.1:9222";
 
@@ -69,7 +69,8 @@ export async function probeTab(page, backend) {
     c = await WSClient.connect(page.webSocketDebuggerUrl);
     const r = await isPageReady(c, backend);
     let login = null;
-    try { login = await detectLoginState(c, backend); } catch (e) { login = { error: e && e.message ? e.message : String(e) }; }
+    // 带重试：页面刚打开时 SPA 未水合，直接探会误判"未登录"（实测 +0ms 时 bodyLen=0）
+    try { login = await detectLoginStateWithRetry(c, backend); } catch (e) { login = { error: e && e.message ? e.message : String(e) }; }
     return { ok: true, ...r, login };
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : String(e) };
@@ -117,16 +118,20 @@ export async function diagnose({ cdpHost = CDP_DEFAULT, backends = [], convId = 
     const pr = await probeTab(target, b);
     if (!pr.ok) hints.push(`探测目标页异常：${pr.error}`);
     else {
-      loggedIn = pr.login && pr.login.loggedIn === true;
+      // 保留三态：true / false / null(未确定)。注意不能用 `=== true` 把 null 压成 false，
+      // 否则页面刚打开（未水合）时会误报"请登录"。
+      const raw = pr.login && pr.login.loggedIn;
+      loggedIn = raw === true ? true : (raw === false ? false : null);
       const lh = pr.login && pr.login.historyLinks;
-      hints.push(`目标页 ${target.url} → composer=${!!pr.composer} limit=${!!pr.limit} loadErr=${!!pr.loadErr} loggedIn=${String(loggedIn)}${Number.isInteger(lh) ? ` historyLinks=${lh}` : ""}`);
+      const shown = loggedIn === null ? "unknown" : String(loggedIn);
+      hints.push(`目标页 ${target.url} → composer=${!!pr.composer} limit=${!!pr.limit} loadErr=${!!pr.loadErr} loggedIn=${shown}${Number.isInteger(lh) ? ` historyLinks=${lh}` : ""}`);
       if (loggedIn === false) {
         hints.push("→ **未登录**：该页面有输入框但账号未登录（未登录的 DeepSeek 首页同样有输入框）。请在该浏览器窗口完成登录后重试");
       }
       if (pr.limit) hints.push("→ 上下文已耗尽：请在网页新建对话后重试");
       else if (!pr.composer) hints.push("→ 未找到输入框：可能未登录或仍在加载，请人工确认后重试");
-      else if (loggedIn !== false) hints.push("→ 页面就绪，可以发送");
-      else hints.push("→ 登录后即可发送（已登录但未开对话也属就绪，发送时会自动进入会话）");
+      else if (loggedIn === true) hints.push("→ 页面就绪，可以发送");
+      else hints.push("→ 登录态未确定（页面可能仍在加载）：请稍后重试；若反复如此，刷新该页面再试");
     }
   }
   return { cdp: info, chatPages: chatPages.map((p) => p.url), convFound, loggedIn, hints };

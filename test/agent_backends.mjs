@@ -158,8 +158,12 @@ export async function isPageReady(c, b) {
 // 登录态探测（只读）。
 // 为什么需要：DeepSeek 首页**未登录也有输入框**，所以 isPageReady 的 composer=true 不能代表已登录；
 // 登录了但还没开新对话时 URL 仍是裸域名，也不能靠 URL 里有没有 /a/chat/s/ 判断。
-// 判别依据（实测校准）：未登录 → 页面出现「登录/注册」按钮、侧边栏无历史会话链接；
-// 已登录 → 侧边栏出现历史会话链接（实测 100+ 条），或首页出现「欢迎回来」。
+//
+// 三态（重要）：loggedIn = true / false / null
+//   - false 只代表"确实看到登录按钮"这类确定信号；**页脚/菜单里的普通「登录」文本不会命中**（严格整串匹配）；
+//   - 页面刚打开时 SPA 还没水合（实测 +0ms 时 bodyLen=0、hist=0、composer=N），此时必须返回 null（未确定），
+//     绝不能返回 false —— 否则会在"其实已登录"时提示用户去登录（实测过的真实误报）；
+//   - 「欢迎回来」不稳定（同一页面重载后可能消失），只能作辅助信号，主信号是侧边栏历史会话链接。
 export async function detectLoginState(c, b = CG) {
   const expr = `(() => {
     const t = (document.body && document.body.innerText) || "";
@@ -176,14 +180,47 @@ export async function detectLoginState(c, b = CG) {
       historyLinks = [...document.querySelectorAll("a[href]")].filter((a) => String(a.getAttribute("href") || "").includes(path)).length;
     } catch (e) {}
     const welcomeBack = /欢迎回来|Welcome back/i.test(t.slice(0, 800));
+    const composer = !!document.querySelector(${JSON.stringify(b.composer || "textarea")});
+    // settled：页面基本渲染完成（有正文、有输入框、文档已 complete）→ 此时"没有历史链接"才是可信的否定信号
+    const settled = document.readyState === "complete" && !!composer && t.trim().length > 0;
     return JSON.stringify({
-      loggedIn: loginPrompt.length === 0 && (historyLinks > 0 || welcomeBack),
-      loginPrompt, historyLinks, welcomeBack, url: location.href,
+      settled, loginPrompt, historyLinks, welcomeBack, composer,
+      readyState: document.readyState, bodyLen: t.length, url: location.href,
     });
   })()`;
   const r = await c.send("Runtime.evaluate", { expression: expr, returnByValue: true });
   if (r.exceptionDetails) throw new Error(`登录态探测异常: ${r.exceptionDetails.text}`);
-  return JSON.parse(r.result.value);
+  const sig = JSON.parse(r.result.value);
+  // 判定放到 Node 侧（纯函数）：既可离线单测，也避免页面里写复杂分支难以验证。
+  return { ...sig, ...decideLoginState(sig) };
+}
+
+// 纯判定函数（可离线单测）：把 DOM 信号翻译成三态登录结论。
+// 规则优先级：看到登录按钮 → false（唯一能确定"未登录"的证据）；
+//             有历史会话链接 / 欢迎语 → true；
+//             其余（页面未渲染完、或全新账号无历史）→ null（未确定，绝不武断判否）。
+export function decideLoginState(sig) {
+  if (!sig || typeof sig !== "object") return { loggedIn: null, loginReason: "NO_SIGNALS" };
+  const loginPrompt = Array.isArray(sig.loginPrompt) ? sig.loginPrompt : [];
+  const historyLinks = Number.isInteger(sig.historyLinks) ? sig.historyLinks : 0;
+  const settled = sig.settled === true;
+  if (loginPrompt.length > 0) return { loggedIn: false, loginReason: "LOGIN_PROMPT_VISIBLE" };
+  if (historyLinks > 0) return { loggedIn: true, loginReason: "HISTORY_LINKS" };
+  if (sig.welcomeBack === true) return { loggedIn: true, loginReason: "WELCOME_BACK" };
+  return { loggedIn: null, loginReason: settled ? "NO_SIGNAL_SETTLED" : "NOT_SETTLED" };
+}
+
+// 带重试的登录态探测：页面刚打开时 SPA 尚未水合，必须等出确定结论（true/false）。
+// 超时仍未确定 → 返回最后一次结果（loggedIn=null），调用方据此显示"未确定"而不是"请登录"。
+export async function detectLoginStateWithRetry(c, b = CG, { timeoutMs = 6000, intervalMs = 400 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  for (;;) {
+    last = await detectLoginState(c, b);
+    if (last.loggedIn !== null) return last;          // 已有确定结论
+    if (Date.now() + intervalMs > deadline) return last;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }
 
 export async function readComposerText(c, b) {
